@@ -63,7 +63,7 @@ export default function Login() {
             Personalized learning paths, adaptive quizzes, and an AI tutor — all in one place.
           </p>
         </div>
-        <p className="text-indigo-300 text-xs">© 2025 Onboarding AI Platform</p>
+        <p className="text-indigo-300 text-xs">© 2026 Onboarding AI Platform</p>
       </div>
 
       {/* Right panel — form */}
