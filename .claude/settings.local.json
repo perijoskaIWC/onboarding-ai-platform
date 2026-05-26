@@ -1,0 +1,23 @@
+{
+  "permissions": {
+    "allow": [
+      "PowerShell(New-Item -ItemType Directory -Force -Path \"d:\\\\Learning_Projects\\\\ONBOARDING\\\\onboarding-ai-platform\\\\specs\\\\001-onboarding-ai-platform\\\\contracts\")",
+      "Bash(docker compose *)",
+      "PowerShell(\\(Get-Command docker -ErrorAction SilentlyContinue\\).Source; Test-Path \"C:\\\\Program Files\\\\Docker\\\\Docker\\\\resources\\\\bin\\\\docker.exe\")",
+      "PowerShell(podman --version)",
+      "PowerShell(podman compose version 2>$null)",
+      "PowerShell(Get-Command podman-compose -ErrorAction SilentlyContinue)",
+      "PowerShell(pip show podman-compose 2>$null)",
+      "PowerShell(podman exec onboarding-ai-platform_backend_1 pip install bcrypt==3.2.2 --quiet)",
+      "PowerShell(podman logs onboarding-ai-platform_backend_1 --tail 30)",
+      "PowerShell(podman exec onboarding-ai-platform_backend_1 pip install httpx==0.27.2 --quiet)",
+      "PowerShell(podman restart onboarding-ai-platform_backend_1)",
+      "PowerShell(podman logs onboarding-ai-platform_backend_1 --tail 5)",
+      "PowerShell(podman logs onboarding-ai-platform_backend_1 --tail 20)",
+      "Bash(podman restart *)",
+      "Bash(Start-Sleep -Seconds 3)",
+      "Bash(podman logs *)",
+      "Bash(podman cp *)"
+    ]
+  }
+}

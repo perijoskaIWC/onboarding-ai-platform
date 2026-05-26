@@ -1,0 +1,73 @@
+from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, Request
+from sqlmodel import Session, select
+
+from ...core.database import get_session, engine
+from ...core.security import require_admin
+from ...core.config import settings
+from ...models.project import Project
+from ...models.question import Question
+from ...services.ai import generate_questions
+
+router = APIRouter(tags=["admin-quiz"])
+
+
+def _get_project_or_404(project_id: str, admin_id: str, session: Session) -> Project:
+    project = session.get(Project, project_id)
+    if not project or project.admin_id != admin_id:
+        raise HTTPException(status_code=404, detail="Project not found")
+    return project
+
+
+async def _run_generate(project_id: str, quiz_length: int, openai_client, chat_model: str):
+    try:
+        with Session(engine) as session:
+            items = await generate_questions(project_id, quiz_length, session, openai_client, chat_model)
+            old = session.exec(select(Question).where(Question.project_id == project_id)).all()
+            for q in old:
+                session.delete(q)
+            for item in items:
+                options = item.get("options", ["", "", "", ""])
+                session.add(Question(
+                    project_id=project_id,
+                    question_text=item.get("question", ""),
+                    option_a=options[0] if len(options) > 0 else "",
+                    option_b=options[1] if len(options) > 1 else "",
+                    option_c=options[2] if len(options) > 2 else "",
+                    option_d=options[3] if len(options) > 3 else "",
+                    correct_answer=item.get("answer", "A"),
+                    explanation=item.get("explanation"),
+                ))
+            session.commit()
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).error("Question generation failed: %s", e, exc_info=True)
+
+
+@router.post("/admin/projects/{project_id}/questions", status_code=202)
+async def generate_project_questions(
+    project_id: str,
+    request: Request,
+    background_tasks: BackgroundTasks,
+    admin=Depends(require_admin),
+    session: Session = Depends(get_session),
+):
+    project = _get_project_or_404(project_id, admin.id, session)
+    background_tasks.add_task(
+        _run_generate,
+        project_id,
+        project.quiz_length,
+        request.app.state.openai_client,
+        settings.azure_openai_chat_deployment,
+    )
+    return {"detail": "Question generation started"}
+
+
+@router.get("/admin/projects/{project_id}/questions")
+async def list_questions(
+    project_id: str,
+    admin=Depends(require_admin),
+    session: Session = Depends(get_session),
+):
+    _get_project_or_404(project_id, admin.id, session)
+    questions = session.exec(select(Question).where(Question.project_id == project_id)).all()
+    return [q.model_dump() for q in questions]
