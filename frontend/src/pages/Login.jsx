@@ -46,10 +46,15 @@ export default function Login() {
   const isRegister = mode === 'register'
 
   return (
-    <div className="min-h-screen bg-gray-50 flex items-center justify-center">
-      <div className="bg-white rounded-lg shadow-md p-8 w-full max-w-md">
-        <h1 className="text-2xl font-bold text-gray-900 mb-2">Onboarding AI Platform</h1>
-        <p className="text-sm text-gray-500 mb-6">{isRegister ? 'Create your learner account' : 'Sign in to your account'}</p>
+    <div className="min-h-screen bg-surface-50 flex items-center justify-center px-4">
+      <div className="bg-white rounded-2xl shadow-lg p-8 w-full max-w-md border border-gray-100">
+        <div className="flex items-center gap-3 mb-4">
+          <div className="w-10 h-10 rounded-lg bg-brand-600 text-white flex items-center justify-center font-bold">AI</div>
+          <div>
+            <h1 className="text-2xl font-bold text-gray-900">Onboarding AI</h1>
+            <p className="text-sm text-gray-500">{isRegister ? 'Create your learner account' : 'Sign in to your account'}</p>
+          </div>
+        </div>
         <form onSubmit={handleSubmit} className="space-y-4">
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">Email</label>
@@ -87,7 +92,7 @@ export default function Login() {
           <button
             type="submit"
             disabled={loading}
-            className="w-full bg-blue-600 text-white py-2 rounded-md hover:bg-blue-700 disabled:opacity-50"
+            className="w-full bg-brand-600 text-white py-2 rounded-md hover:bg-brand-700 disabled:opacity-50"
           >
             {loading ? (isRegister ? 'Creating account…' : 'Signing in…') : (isRegister ? 'Create Account' : 'Sign In')}
           </button>

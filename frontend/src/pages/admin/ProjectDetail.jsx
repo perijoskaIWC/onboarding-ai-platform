@@ -144,7 +144,15 @@ export default function ProjectDetail() {
     setDocuments((prev) => prev.filter((d) => d.id !== docId))
   }
 
-  if (loading) return <div className="p-6 text-gray-500">Loading…</div>
+  if (loading) return (
+    <div className="p-6 max-w-4xl mx-auto">
+      <div className="h-8 bg-gray-200 rounded w-1/3 mb-4 animate-pulse" />
+      <div className="space-y-4">
+        <div className="h-40 bg-white rounded-lg shadow p-4 animate-pulse" />
+        <div className="h-40 bg-white rounded-lg shadow p-4 animate-pulse" />
+      </div>
+    </div>
+  )
   if (!project) return <div className="p-6 text-red-500">{error || 'Project not found.'}</div>
 
   return (
@@ -259,16 +267,24 @@ export default function ProjectDetail() {
                 if (attempts >= 10) clearInterval(poll)
               }, 3000)
             }}
-            className="text-xs bg-blue-600 text-white px-3 py-1.5 rounded hover:bg-blue-700"
+            className="text-xs bg-brand-600 text-white px-3 py-1.5 rounded hover:bg-brand-700"
           >
             Regenerate
           </button>
         </div>
         {lpError && <p className="text-red-600 text-sm mb-2">{lpError}</p>}
         {lpLoading ? (
-          <p className="text-gray-400 text-sm">Loading…</p>
+          <div className="space-y-2">
+            <div className="h-6 w-3/4 bg-gray-200 rounded animate-pulse" />
+            <div className="h-6 w-full bg-gray-200 rounded animate-pulse" />
+          </div>
         ) : !learningPath ? (
-          <p className="text-gray-400 text-sm">No learning path yet. Click Regenerate to create one.</p>
+          <div className="text-center py-6">
+            <div className="text-gray-400">No learning path yet.</div>
+            <div className="mt-3">
+              <button onClick={async () => { setLpError(''); setLearningPath(null); await adminTriggerLearningPath(projectId) }} className="bg-brand-600 text-white px-3 py-1.5 rounded hover:bg-brand-700">Generate</button>
+            </div>
+          </div>
         ) : (
           <div className="space-y-2">
             {learningPath.overview && (

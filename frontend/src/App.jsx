@@ -11,10 +11,12 @@ import Chat from './pages/learner/Chat'
 import Quiz from './pages/learner/Quiz'
 import Progress from './pages/learner/Progress'
 
+import Layout from './components/Layout'
+
 function AdminLayout({ children }) {
   return (
     <PrivateRoute role="admin">
-      {children}
+      <Layout role="admin">{children}</Layout>
     </PrivateRoute>
   )
 }
@@ -22,7 +24,7 @@ function AdminLayout({ children }) {
 function LearnerLayout({ children }) {
   return (
     <PrivateRoute role="learner">
-      {children}
+      <Layout role="learner">{children}</Layout>
     </PrivateRoute>
   )
 }
