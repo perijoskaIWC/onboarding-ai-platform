@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, Request, BackgroundTasks
+from fastapi import APIRouter, Depends, HTTPException, Request, BackgroundTasks, Query
 from sqlmodel import Session, select
 
 from ...core.database import get_session
@@ -24,11 +24,31 @@ def _check_assigned(project_id: str, learner_id: str, session: Session):
         raise HTTPException(status_code=403, detail="Not assigned to this project")
 
 
-async def _run_generate(project_id: str, learner_id: str, session: Session, openai_client, chat_model: str):
+async def _run_generate(project_id: str, learner_id: str, session: Session, openai_client, chat_model: str, path_name: str = "Standard"):
     try:
-        await generate_learning_path(project_id, learner_id, session, openai_client, chat_model)
+        await generate_learning_path(project_id, learner_id, session, openai_client, chat_model, path_name)
     except Exception:
         pass
+
+
+@router.get("/user/projects/{project_id}/learning-path/names")
+async def list_my_path_names(
+    project_id: str,
+    learner=Depends(require_learner),
+    session: Session = Depends(get_session),
+):
+    _check_assigned(project_id, learner.id, session)
+    paths = session.exec(
+        select(LearningPath).where(
+            LearningPath.project_id == project_id,
+            LearningPath.learner_id == learner.id,
+        )
+    ).all()
+    seen = {}
+    for p in sorted(paths, key=lambda x: x.generated_at, reverse=True):
+        if p.path_name not in seen:
+            seen[p.path_name] = p.generated_at.isoformat()
+    return [{"path_name": k, "generated_at": v} for k, v in seen.items()]
 
 
 @router.get("/user/projects/{project_id}/learning-path")
@@ -36,6 +56,7 @@ async def get_my_learning_path(
     project_id: str,
     request: Request,
     background_tasks: BackgroundTasks,
+    path_name: str = Query(default="Standard"),
     learner=Depends(require_learner),
     session: Session = Depends(get_session),
 ):
@@ -43,12 +64,16 @@ async def get_my_learning_path(
 
     path = session.exec(
         select(LearningPath)
-        .where(LearningPath.project_id == project_id, LearningPath.learner_id == learner.id)
+        .where(
+            LearningPath.project_id == project_id,
+            LearningPath.learner_id == learner.id,
+            LearningPath.path_name == path_name,
+        )
         .order_by(LearningPath.generated_at.desc())
     ).first()
 
     if not path:
-        # Auto-generate on first request
+        # Auto-generate on first request for this path_name
         openai_client = request.app.state.openai_client
         background_tasks.add_task(
             _run_generate,
@@ -57,8 +82,9 @@ async def get_my_learning_path(
             session,
             openai_client,
             settings.azure_openai_chat_deployment,
+            path_name,
         )
-        return {"status": "generating", "modules": []}
+        return {"status": "generating", "path_name": path_name, "modules": []}
 
     modules = session.exec(
         select(LearningModule)

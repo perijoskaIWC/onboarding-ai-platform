@@ -15,3 +15,4 @@ class Question(SQLModel, table=True):
     option_d: str
     correct_answer: str  # "A" | "B" | "C" | "D"
     explanation: Optional[str] = Field(default=None)
+    is_published: bool = Field(default=False, sa_column_kwargs={"server_default": "false"})

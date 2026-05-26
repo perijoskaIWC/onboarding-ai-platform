@@ -38,7 +38,7 @@ export default function Analytics() {
   return (
     <div className="p-6 max-w-4xl mx-auto space-y-6">
       <div className="flex items-center gap-3">
-        <Link to={`/admin/projects/${projectId}`} className="text-blue-600 text-sm hover:underline">
+        <Link to={`/admin/projects/${projectId}`} className="text-brand-600 text-sm hover:underline">
           ← Project
         </Link>
         <h1 className="text-2xl font-bold text-gray-900">Analytics</h1>
@@ -53,7 +53,7 @@ export default function Analytics() {
           { label: 'Ready (≥80%)', value: data.ready_count },
         ].map((s) => (
           <div key={s.label} className="bg-white rounded-lg shadow p-4 text-center">
-            <p className="text-2xl font-bold text-blue-600">{s.value}</p>
+            <p className="text-2xl font-bold text-brand-600">{s.value}</p>
             <p className="text-xs text-gray-400 mt-1">{s.label}</p>
           </div>
         ))}

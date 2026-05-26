@@ -18,6 +18,8 @@ from .models import module_completion as _mc_model  # noqa: F401
 from .models import learner_progress as _progress_model  # noqa: F401
 from .models import quiz_attempt as _qa_model  # noqa: F401
 from .models import question as _question_model  # noqa: F401
+from .models import weekly_plan as _wp_model  # noqa: F401
+from .models import adaptive_question as _aq_model  # noqa: F401
 from .api.auth import router as auth_router
 from .api.admin.projects import router as admin_projects_router
 from .api.admin import documents as _admin_docs_module
@@ -29,6 +31,8 @@ from .api.user.learning_path import router as user_lp_router
 from .api.user.chat import router as user_chat_router
 from .api.user.quiz import router as user_quiz_router
 from .api.user.progress import router as user_progress_router
+from .api.admin.weekly_plan import router as admin_weekly_plan_router
+from .api.user.weekly_plan import router as user_weekly_plan_router
 
 
 @asynccontextmanager
@@ -75,6 +79,8 @@ app.include_router(admin_analytics_router, prefix="/api")
 app.include_router(user_chat_router, prefix="/api")
 app.include_router(user_quiz_router, prefix="/api")
 app.include_router(user_progress_router, prefix="/api")
+app.include_router(admin_weekly_plan_router, prefix="/api")
+app.include_router(user_weekly_plan_router, prefix="/api")
 
 
 @app.get("/health")

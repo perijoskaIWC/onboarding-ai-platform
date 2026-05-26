@@ -97,7 +97,7 @@ export default function Projects() {
           </div>
           {error && <p className="text-red-600 text-sm">{error}</p>}
           <div className="flex gap-2">
-            <button type="submit" className="bg-blue-600 text-white px-4 py-2 rounded text-sm hover:bg-blue-700">
+            <button type="submit" className="bg-brand-600 text-white px-4 py-2 rounded text-sm hover:bg-brand-700">
               Create
             </button>
             <button type="button" onClick={() => setShowForm(false)} className="text-gray-500 text-sm px-4 py-2">

@@ -6,6 +6,7 @@ import Projects from './pages/admin/Projects'
 import ProjectDetail from './pages/admin/ProjectDetail'
 import Analytics from './pages/admin/Analytics'
 import LearnerDashboard from './pages/learner/Dashboard'
+import LearnerProject from './pages/learner/LearnerProject'
 import LearningPath from './pages/learner/LearningPath'
 import Chat from './pages/learner/Chat'
 import Quiz from './pages/learner/Quiz'
@@ -43,6 +44,7 @@ export default function App() {
 
         {/* Learner */}
         <Route path="/learner" element={<LearnerLayout><LearnerDashboard /></LearnerLayout>} />
+        <Route path="/learner/projects/:projectId" element={<LearnerLayout><LearnerProject /></LearnerLayout>} />
         <Route path="/learner/projects/:projectId/learning-path" element={<LearnerLayout><LearningPath /></LearnerLayout>} />
         <Route path="/learner/projects/:projectId/chat" element={<LearnerLayout><Chat /></LearnerLayout>} />
         <Route path="/learner/projects/:projectId/quiz" element={<LearnerLayout><Quiz /></LearnerLayout>} />

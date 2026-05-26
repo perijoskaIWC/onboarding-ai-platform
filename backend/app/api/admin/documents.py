@@ -1,11 +1,14 @@
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, BackgroundTasks, Request
-from sqlmodel import Session, select, func
+from sqlmodel import Session, select, func, delete
 from ...core.database import get_session, engine
 from ...core.security import require_admin
 from ...core.config import settings
 from ...models.document import Document
 from ...models.document_chunk import DocumentChunk
 from ...models.project import Project
+from ...models.learning_path import LearningPath
+from ...models.learning_module import LearningModule
+from ...models.question import Question
 from ...services.ingestion import ingest_document
 
 router = APIRouter(tags=["admin-documents"])
@@ -95,8 +98,22 @@ async def delete_document(
     doc = session.get(Document, doc_id)
     if not doc or doc.project_id != project_id:
         raise HTTPException(status_code=404, detail="Document not found")
-    chunks = session.exec(select(DocumentChunk).where(DocumentChunk.document_id == doc_id)).all()
-    for chunk in chunks:
-        session.delete(chunk)
-    session.delete(doc)
-    session.commit()
+    # delete chunks first, then the document
+    try:
+        session.exec(delete(DocumentChunk).where(DocumentChunk.document_id == doc_id))
+        session.exec(delete(Document).where(Document.id == doc_id))
+        session.commit()
+
+        remaining = session.exec(select(Document).where(Document.project_id == project_id)).first()
+        if remaining is None:
+            paths = session.exec(select(LearningPath).where(LearningPath.project_id == project_id)).all()
+            for path in paths:
+                session.exec(delete(LearningModule).where(LearningModule.learning_path_id == path.id))
+            session.exec(delete(LearningPath).where(LearningPath.project_id == project_id))
+            session.exec(delete(Question).where(Question.project_id == project_id))
+            session.commit()
+    except Exception:
+        import traceback
+        print(f"Exception deleting document {doc_id}:")
+        print(traceback.format_exc())
+        raise

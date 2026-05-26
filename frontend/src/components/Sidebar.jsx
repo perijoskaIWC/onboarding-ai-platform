@@ -1,44 +1,129 @@
-import { NavLink } from 'react-router-dom'
+import { NavLink, useNavigate } from 'react-router-dom'
+import { getStoredToken, decodeToken, logout } from '../services/auth'
 
-function NavItem({ to, icon, children }) {
+const ICONS = {
+  overview: (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="3" y="3" width="7" height="7" rx="1" /><rect x="14" y="3" width="7" height="7" rx="1" />
+      <rect x="3" y="14" width="7" height="7" rx="1" /><rect x="14" y="14" width="7" height="7" rx="1" />
+    </svg>
+  ),
+  projects: (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M3 7h18M3 12h18M3 17h18" />
+    </svg>
+  ),
+  home: (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M3 12l9-9 9 9v8a2 2 0 01-2 2h-4v-5H9v5H5a2 2 0 01-2-2v-8z" />
+    </svg>
+  ),
+}
+
+function NavItem({ to, icon, children, end }) {
   return (
     <NavLink
       to={to}
-      className={({ isActive }) => `flex items-center gap-3 px-3 py-2 rounded-md text-sm font-medium ${isActive ? 'bg-brand-600 text-white' : 'text-gray-700 hover:bg-gray-100'}`}
+      end={end}
+      className={({ isActive }) =>
+        `group flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all duration-150 relative
+        ${isActive
+          ? 'bg-indigo-500/15 text-white'
+          : 'text-slate-400 hover:bg-slate-800/80 hover:text-slate-200'
+        }`
+      }
     >
-      <span className="w-5 h-5 text-current" aria-hidden dangerouslySetInnerHTML={{ __html: icon }} />
-      <span>{children}</span>
+      {({ isActive }) => (
+        <>
+          {isActive && (
+            <span className="absolute left-0 top-1/2 -translate-y-1/2 w-0.5 h-5 bg-indigo-400 rounded-full" />
+          )}
+          <span className="w-[18px] h-[18px] shrink-0 transition-colors">
+            {icon}
+          </span>
+          <span>{children}</span>
+        </>
+      )}
     </NavLink>
   )
 }
 
+function UserAvatar({ email }) {
+  const initials = email
+    ? email.split('@')[0].slice(0, 2).toUpperCase()
+    : '?'
+  return (
+    <div className="w-8 h-8 rounded-full bg-indigo-500/30 border border-indigo-400/40 flex items-center justify-center text-xs font-semibold text-indigo-200 shrink-0">
+      {initials}
+    </div>
+  )
+}
+
 export default function Sidebar({ role = 'learner' }) {
+  const navigate = useNavigate()
+  const token = getStoredToken()
+  const email = decodeToken(token)?.sub ?? ''
+
+  async function handleLogout() {
+    await logout()
+    navigate('/login', { replace: true })
+  }
+
   const adminLinks = [
-    { to: '/admin', label: 'Overview', icon: '<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 7h18M3 12h18M3 17h18"/></svg>' },
-    { to: '/admin/projects', label: 'Projects', icon: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor"><path d="M3 4a1 1 0 011-1h12a1 1 0 011 1v2H3V4z"/><path fillRule="evenodd" d="M3 8h14v6a1 1 0 01-1 1H4a1 1 0 01-1-1V8zm5 2a1 1 0 100 2h4a1 1 0 100-2H8z" clipRule="evenodd"/></svg>' },
-    { to: '/admin/projects/1/analytics', label: 'Analytics', icon: '<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M11 3v18M4 12h14"/></svg>' },
+    { to: '/admin', label: 'Overview', icon: ICONS.overview, end: true },
+    { to: '/admin/projects', label: 'Projects', icon: ICONS.projects },
   ]
 
   const learnerLinks = [
-    { to: '/learner', label: 'Home', icon: '<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 12l9-9 9 9v8a2 2 0 01-2 2h-4v-6H9v6H5a2 2 0 01-2-2v-8z"/></svg>' },
-    { to: '/learner/projects/1/learning-path', label: 'Learning Path', icon: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor"><path d="M4 3a1 1 0 000 2h12a1 1 0 100-2H4zM4 8a1 1 0 000 2h8a1 1 0 100-2H4zM4 13a1 1 0 000 2h6a1 1 0 100-2H4z"/></svg>' },
-    { to: '/learner/projects/1/chat', label: 'AI Tutor', icon: '<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M8 10h.01M12 10h.01M16 10h.01M21 12c0 4.418-4.03 8-9 8-1.366 0-2.67-.257-3.846-.72L3 20l1.109-4.11C3.4 14.373 3 13.21 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"/></svg>' },
-    { to: '/learner/projects/1/quiz', label: 'Quiz', icon: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor"><path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l.58 1.789a1 1 0 00.95.69h1.882c.969 0 1.371 1.24.588 1.81l-1.522 1.106a1 1 0 00-.364 1.118l.58 1.789c.3.921-.755 1.688-1.54 1.118L10 12.347l-1.702 1.2c-.785.57-1.84-.197-1.54-1.118l.58-1.789a1 1 0 00-.364-1.118L5.452 6.216C4.669 5.646 5.07 4.406 6.039 4.406h1.882a1 1 0 00.95-.69l.58-1.789z"/></svg>' },
+    { to: '/learner', label: 'Home', icon: ICONS.home, end: true },
   ]
 
   const links = role === 'admin' ? adminLinks : learnerLinks
 
   return (
-    <aside className="w-64 bg-white border-r border-gray-100 p-4 hidden md:block">
-      <div className="mb-6">
-        <div className="text-xl font-bold text-gray-900">Onboarding AI</div>
-        <div className="text-xs text-gray-400">{role === 'admin' ? 'Admin' : 'Learner'}</div>
+    <aside className="w-60 bg-slate-900 flex flex-col hidden md:flex shrink-0">
+      {/* Logo */}
+      <div className="px-5 pt-6 pb-5">
+        <div className="flex items-center gap-3">
+          <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-indigo-500 to-violet-600 flex items-center justify-center shrink-0">
+            <svg className="w-4 h-4 text-white" viewBox="0 0 24 24" fill="currentColor">
+              <path d="M12 2a7 7 0 00-7 7c0 2.38 1.19 4.47 3 5.74V17a1 1 0 001 1h6a1 1 0 001-1v-2.26A7 7 0 0012 2z" />
+              <path d="M9 21h6v1H9z" opacity=".5" />
+            </svg>
+          </div>
+          <div>
+            <div className="text-sm font-semibold text-white leading-tight">Onboarding AI</div>
+            <div className="text-xs text-slate-500 leading-tight mt-0.5">{role === 'admin' ? 'Admin Portal' : 'Learner Portal'}</div>
+          </div>
+        </div>
       </div>
-      <nav className="flex flex-col gap-1">
+
+      {/* Divider */}
+      <div className="mx-4 border-t border-slate-800 mb-4" />
+
+      {/* Nav */}
+      <nav className="flex-1 px-3 flex flex-col gap-0.5">
         {links.map((l) => (
-          <NavItem key={l.to} to={l.to} icon={l.icon}>{l.label}</NavItem>
+          <NavItem key={l.to} to={l.to} icon={l.icon} end={l.end}>
+            {l.label}
+          </NavItem>
         ))}
       </nav>
+
+      {/* Bottom — user + logout */}
+      <div className="mx-4 border-t border-slate-800 mt-4" />
+      <div className="px-4 py-4 flex items-center gap-3">
+        <UserAvatar email={email} />
+        <div className="flex-1 min-w-0">
+          <p className="text-xs text-slate-300 truncate leading-tight">{email || 'User'}</p>
+          <button
+            onClick={handleLogout}
+            className="text-xs text-slate-500 hover:text-red-400 transition-colors mt-0.5"
+          >
+            Sign out
+          </button>
+        </div>
+      </div>
     </aside>
   )
 }

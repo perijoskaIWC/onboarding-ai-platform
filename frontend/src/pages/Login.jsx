@@ -22,13 +22,11 @@ export default function Login() {
   async function handleSubmit(e) {
     e.preventDefault()
     setError('')
-
     if (mode === 'register') {
       if (!email) return setError('Email is required.')
       if (password.length < 8) return setError('Password must be at least 8 characters.')
       if (password !== confirmPassword) return setError('Passwords do not match.')
     }
-
     setLoading(true)
     try {
       const data = mode === 'login'
@@ -37,7 +35,7 @@ export default function Login() {
       const payload = decodeToken(data.access_token)
       navigate(payload?.role === 'admin' ? '/admin' : '/learner', { replace: true })
     } catch (err) {
-      setError(err.response?.data?.detail ?? (mode === 'login' ? 'Login failed. Please try again.' : 'Registration failed. Please try again.'))
+      setError(err.response?.data?.detail ?? (mode === 'login' ? 'Login failed. Please try again.' : 'Registration failed.'))
     } finally {
       setLoading(false)
     }
@@ -46,68 +44,114 @@ export default function Login() {
   const isRegister = mode === 'register'
 
   return (
-    <div className="min-h-screen bg-surface-50 flex items-center justify-center px-4">
-      <div className="bg-white rounded-2xl shadow-lg p-8 w-full max-w-md border border-gray-100">
-        <div className="flex items-center gap-3 mb-4">
-          <div className="w-10 h-10 rounded-lg bg-brand-600 text-white flex items-center justify-center font-bold">AI</div>
-          <div>
-            <h1 className="text-2xl font-bold text-gray-900">Onboarding AI</h1>
-            <p className="text-sm text-gray-500">{isRegister ? 'Create your learner account' : 'Sign in to your account'}</p>
+    <div className="min-h-screen bg-slate-900 flex">
+      {/* Left panel — branding */}
+      <div className="hidden lg:flex lg:w-1/2 flex-col justify-between p-12 bg-gradient-to-br from-indigo-600 via-violet-600 to-indigo-800">
+        <div className="flex items-center gap-3">
+          <div className="w-9 h-9 rounded-xl bg-white/20 backdrop-blur flex items-center justify-center">
+            <svg className="w-5 h-5 text-white" viewBox="0 0 24 24" fill="currentColor">
+              <path d="M12 2a7 7 0 00-7 7c0 2.38 1.19 4.47 3 5.74V17a1 1 0 001 1h6a1 1 0 001-1v-2.26A7 7 0 0012 2z" />
+            </svg>
           </div>
+          <span className="text-white font-semibold">Onboarding AI</span>
         </div>
-        <form onSubmit={handleSubmit} className="space-y-4">
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Email</label>
-            <input
-              type="email"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              required
-              className="w-full border border-gray-300 rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
-            />
+        <div>
+          <h2 className="text-4xl font-bold text-white leading-tight">
+            Your AI-powered<br />onboarding journey<br />starts here.
+          </h2>
+          <p className="text-indigo-200 mt-4 text-sm leading-relaxed">
+            Personalized learning paths, adaptive quizzes, and an AI tutor — all in one place.
+          </p>
+        </div>
+        <p className="text-indigo-300 text-xs">© 2025 Onboarding AI Platform</p>
+      </div>
+
+      {/* Right panel — form */}
+      <div className="flex-1 flex items-center justify-center px-6 py-12 bg-white">
+        <div className="w-full max-w-sm">
+          {/* Mobile logo */}
+          <div className="lg:hidden flex items-center gap-2 mb-8">
+            <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-indigo-500 to-violet-600 flex items-center justify-center">
+              <svg className="w-4 h-4 text-white" viewBox="0 0 24 24" fill="currentColor">
+                <path d="M12 2a7 7 0 00-7 7c0 2.38 1.19 4.47 3 5.74V17a1 1 0 001 1h6a1 1 0 001-1v-2.26A7 7 0 0012 2z" />
+              </svg>
+            </div>
+            <span className="font-semibold text-slate-800">Onboarding AI</span>
           </div>
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Password</label>
-            <input
-              type="password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              required
-              className="w-full border border-gray-300 rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
-            />
-          </div>
-          {isRegister && (
+
+          <h1 className="text-2xl font-bold text-slate-900 mb-1">
+            {isRegister ? 'Create account' : 'Sign in'}
+          </h1>
+          <p className="text-sm text-slate-500 mb-7">
+            {isRegister ? 'Join as a learner to start your onboarding.' : 'Enter your credentials to continue.'}
+          </p>
+
+          <form onSubmit={handleSubmit} className="space-y-4">
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Confirm Password</label>
+              <label className="block text-sm font-medium text-slate-700 mb-1.5">Email</label>
               <input
-                type="password"
-                value={confirmPassword}
-                onChange={(e) => setConfirmPassword(e.target.value)}
+                type="email"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
                 required
-                className="w-full border border-gray-300 rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                placeholder="you@company.com"
+                className="w-full border border-slate-200 rounded-lg px-3.5 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition"
               />
             </div>
-          )}
-          {error && <p className="text-red-600 text-sm">{error}</p>}
-          <button
-            type="submit"
-            disabled={loading}
-            className="w-full bg-brand-600 text-white py-2 rounded-md hover:bg-brand-700 disabled:opacity-50"
-          >
-            {loading ? (isRegister ? 'Creating account…' : 'Signing in…') : (isRegister ? 'Create Account' : 'Sign In')}
-          </button>
-        </form>
-        <p className="text-sm text-gray-500 text-center mt-4">
-          {isRegister ? (
-            <>Already have an account?{' '}
-              <button onClick={() => switchMode('login')} className="text-blue-600 hover:underline">Sign in</button>
-            </>
-          ) : (
-            <>Don't have an account?{' '}
-              <button onClick={() => switchMode('register')} className="text-blue-600 hover:underline">Sign up</button>
-            </>
-          )}
-        </p>
+            <div>
+              <label className="block text-sm font-medium text-slate-700 mb-1.5">Password</label>
+              <input
+                type="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                required
+                placeholder="••••••••"
+                className="w-full border border-slate-200 rounded-lg px-3.5 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition"
+              />
+            </div>
+            {isRegister && (
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-1.5">Confirm password</label>
+                <input
+                  type="password"
+                  value={confirmPassword}
+                  onChange={(e) => setConfirmPassword(e.target.value)}
+                  required
+                  placeholder="••••••••"
+                  className="w-full border border-slate-200 rounded-lg px-3.5 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition"
+                />
+              </div>
+            )}
+
+            {error && (
+              <div className="bg-red-50 border border-red-100 rounded-lg px-3.5 py-2.5 text-sm text-red-600">
+                {error}
+              </div>
+            )}
+
+            <button
+              type="submit"
+              disabled={loading}
+              className="w-full bg-indigo-600 text-white py-2.5 rounded-lg text-sm font-medium hover:bg-indigo-700 disabled:opacity-50 transition-colors mt-2"
+            >
+              {loading
+                ? (isRegister ? 'Creating account…' : 'Signing in…')
+                : (isRegister ? 'Create account' : 'Sign in')}
+            </button>
+          </form>
+
+          <p className="text-sm text-slate-500 text-center mt-6">
+            {isRegister ? (
+              <>Already have an account?{' '}
+                <button onClick={() => switchMode('login')} className="text-indigo-600 font-medium hover:underline">Sign in</button>
+              </>
+            ) : (
+              <>Don't have an account?{' '}
+                <button onClick={() => switchMode('register')} className="text-indigo-600 font-medium hover:underline">Sign up</button>
+              </>
+            )}
+          </p>
+        </div>
       </div>
     </div>
   )

@@ -18,6 +18,7 @@ async def generate_learning_path(
     session: Session,
     openai_client: AsyncOpenAI,
     chat_model: str,
+    path_name: str = "Standard",
 ) -> LearningPath:
     chunks = session.exec(
         select(DocumentChunk)
@@ -30,12 +31,20 @@ async def generate_learning_path(
 
     corpus = "\n\n---\n\n".join(c.content for c in chunks[:80])
 
+    path_hints = {
+        "Fast Track": "Focus on the most essential concepts only. Keep modules concise — aim for 3-4 modules.",
+        "In-Depth": "Cover all material thoroughly with detailed explanations. Include 6-7 modules with rich summaries.",
+        "Standard": "Balance breadth and depth. Include 4-5 modules ordered from foundational to advanced.",
+    }
+    style_hint = path_hints.get(path_name, f"This is a '{path_name}' path. Tailor the depth and breadth accordingly.")
+
     system_prompt = (
         "You are an expert onboarding curriculum designer. "
         "Given the provided learning material, create a structured learning path. "
+        f"{style_hint} "
         "Respond ONLY with valid JSON matching this schema exactly:\n"
         '{"overview": "<string>", "modules": [{"title": "<string>", "summary": "<string>", "key_concepts": "<comma-separated string>"}]}\n'
-        "Include 3-7 modules ordered from foundational to advanced. No markdown fences."
+        "No markdown fences."
     )
 
     response = await openai_client.chat.completions.create(
@@ -55,6 +64,7 @@ async def generate_learning_path(
         project_id=project_id,
         learner_id=learner_id,
         overview=data.get("overview", ""),
+        path_name=path_name,
     )
     session.add(path)
     session.flush()
@@ -178,3 +188,174 @@ async def generate_questions(
     if isinstance(data, dict):
         data = next(iter(data.values()))
     return data[:quiz_length]
+
+
+async def generate_adaptive_questions(
+    project_id: str,
+    score: float,
+    wrong_topics: list[str],
+    session: Session,
+    openai_client: AsyncOpenAI,
+    chat_model: str,
+    count: int = 3,
+) -> list[dict]:
+    chunks = session.exec(
+        select(DocumentChunk)
+        .where(DocumentChunk.project_id == project_id)
+        .order_by(DocumentChunk.document_id, DocumentChunk.chunk_index)
+    ).all()
+
+    if not chunks:
+        return []
+
+    import random as _random
+    sample = _random.sample(chunks, min(count * 4, len(chunks)))
+    corpus = "\n\n---\n\n".join(c.content for c in sample)
+
+    if score >= 0.8:
+        difficulty = "harder"
+        style = "challenging, requiring deeper analysis or application of concepts"
+    elif score <= 0.4:
+        difficulty = "easier"
+        style = "straightforward, reinforcing fundamental concepts clearly"
+    else:
+        difficulty = "standard"
+        style = "moderate difficulty, covering key concepts"
+
+    topic_hint = ""
+    if wrong_topics:
+        topic_hint = f" Focus on these topics where the learner struggled: {', '.join(wrong_topics[:3])}."
+
+    system_prompt = (
+        f"You are a quiz designer. Generate exactly {count} {style} multiple-choice questions from the learning material.{topic_hint} "
+        'Respond ONLY with a valid JSON object: '
+        '{"questions": [{"question": "...", "options": ["A) ...", "B) ...", "C) ...", "D) ..."], "answer": "A", "explanation": "..."}]} '
+        "No markdown fences."
+    )
+
+    response = await openai_client.chat.completions.create(
+        model=chat_model,
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": f"Learning material:\n\n{corpus}"},
+        ],
+        temperature=0.5,
+        response_format={"type": "json_object"},
+    )
+
+    raw = response.choices[0].message.content
+    data = json.loads(raw)
+    if isinstance(data, dict):
+        data = next(iter(data.values()))
+
+    return [(item, difficulty) for item in data[:count]]
+
+
+async def orchestrate(
+    message: str,
+    project_id: str,
+    learner_id: str,
+    learner_context: dict,
+    top_k: int,
+    session: Session,
+    openai_client: AsyncOpenAI,
+    embedding_model: str,
+    chat_model: str,
+) -> dict:
+    """Route message to the appropriate specialist agent and return a combined response."""
+
+    # Step 1: Route — classify intent
+    route_response = await openai_client.chat.completions.create(
+        model=chat_model,
+        messages=[
+            {
+                "role": "system",
+                "content": (
+                    "You are a routing agent. Classify the learner's message into exactly one of these intents:\n"
+                    "- tutor: questions about learning material, concepts, definitions, explanations\n"
+                    "- quiz_advisor: questions about quiz performance, scores, mistakes, what to study\n"
+                    "- path_advisor: questions about learning path, module order, what to do next, progress\n"
+                    "Respond with ONLY the intent word. No other text."
+                ),
+            },
+            {"role": "user", "content": message},
+        ],
+        temperature=0,
+        max_tokens=10,
+    )
+    intent = route_response.choices[0].message.content.strip().lower()
+    if intent not in ("tutor", "quiz_advisor", "path_advisor"):
+        intent = "tutor"
+
+    # Step 2: Dispatch to specialist agent
+    if intent == "tutor":
+        result = await rag_chat(
+            question=message,
+            project_id=project_id,
+            learner_id=learner_id,
+            top_k=top_k,
+            session=session,
+            openai_client=openai_client,
+            embedding_model=embedding_model,
+            chat_model=chat_model,
+        )
+        return {"agent": "tutor", "agent_label": "AI Tutor", **result}
+
+    elif intent == "quiz_advisor":
+        score = learner_context.get("quiz_score")
+        correct = learner_context.get("quiz_correct")
+        total = learner_context.get("quiz_total")
+        score_context = (
+            f"The learner's latest quiz score: {correct}/{total} ({round((score or 0)*100)}%)."
+            if score is not None else "No quiz attempts on record yet."
+        )
+        response = await openai_client.chat.completions.create(
+            model=chat_model,
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "You are a quiz performance advisor. Help the learner understand their quiz results "
+                        "and what to focus on. Be encouraging and specific. "
+                        f"Context: {score_context}"
+                    ),
+                },
+                {"role": "user", "content": message},
+            ],
+            temperature=0.3,
+        )
+        return {
+            "agent": "quiz_advisor",
+            "agent_label": "Quiz Advisor",
+            "answer": response.choices[0].message.content,
+            "sources": [],
+        }
+
+    else:  # path_advisor
+        modules_done = learner_context.get("modules_completed", 0)
+        modules_total = learner_context.get("modules_total", 0)
+        path_context = (
+            f"The learner has completed {modules_done} of {modules_total} modules."
+            if modules_total else "No learning path generated yet."
+        )
+        response = await openai_client.chat.completions.create(
+            model=chat_model,
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "You are a learning path advisor. Help the learner understand their progress "
+                        "and decide what to study next. Be motivating and practical. "
+                        f"Context: {path_context}"
+                    ),
+                },
+                {"role": "user", "content": message},
+            ],
+            temperature=0.3,
+        )
+        return {
+            "agent": "path_advisor",
+            "agent_label": "Path Advisor",
+            "answer": response.choices[0].message.content,
+            "sources": [],
+        }

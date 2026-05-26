@@ -8,6 +8,15 @@ from ...core.security import require_admin
 from ...models.project import Project
 from ...models.project_assignment import ProjectAssignment
 from ...models.user import User
+from ...models.document import Document
+from ...models.document_chunk import DocumentChunk
+from ...models.learning_path import LearningPath
+from ...models.learning_module import LearningModule
+from ...models.question import Question
+from ...models.quiz_attempt import QuizAttempt
+from ...models.learner_progress import LearnerProgress
+from ...models.module_completion import ModuleCompletion
+from sqlmodel import delete
 
 router = APIRouter(prefix="/projects", tags=["admin-projects"])
 
@@ -111,6 +120,22 @@ async def delete_project(
     session: Session = Depends(get_session),
 ):
     project = _get_project_or_404(project_id, admin.id, session)
+    # remove dependent rows to avoid FK constraint IntegrityError
+    # order matters: children first, then project
+    session.exec(delete(ProjectAssignment).where(ProjectAssignment.project_id == project_id))
+    session.exec(delete(QuizAttempt).where(QuizAttempt.project_id == project_id))
+    session.exec(delete(Question).where(Question.project_id == project_id))
+    session.exec(delete(LearnerProgress).where(LearnerProgress.project_id == project_id))
+    # module_completions → learning_modules → learning_paths
+    lp_ids = select(LearningPath.id).where(LearningPath.project_id == project_id)
+    lm_ids = select(LearningModule.id).where(LearningModule.learning_path_id.in_(lp_ids))
+    session.exec(delete(ModuleCompletion).where(ModuleCompletion.module_id.in_(lm_ids)))
+    session.exec(delete(LearningModule).where(LearningModule.learning_path_id.in_(lp_ids)))
+    session.exec(delete(LearningPath).where(LearningPath.project_id == project_id))
+    # documents and chunks
+    session.exec(delete(DocumentChunk).where(DocumentChunk.project_id == project_id))
+    session.exec(delete(Document).where(Document.project_id == project_id))
+    # finally delete the project
     session.delete(project)
     session.commit()
 
