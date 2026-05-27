@@ -1,16 +1,32 @@
-from fastapi import APIRouter, Depends, HTTPException, Request, BackgroundTasks, Query
+from fastapi import APIRouter, Depends, HTTPException
 from sqlmodel import Session, select
 
 from ...core.database import get_session
 from ...core.security import require_learner
-from ...core.config import settings
 from ...models.project_assignment import ProjectAssignment
 from ...models.learning_path import LearningPath
 from ...models.learning_module import LearningModule
 from ...models.module_completion import ModuleCompletion
-from ...services.ai import generate_learning_path
+from ...models.module_chunk import ModuleChunk
+from ...models.document_chunk import DocumentChunk
 
 router = APIRouter(tags=["user-learning-path"])
+
+
+def _attach_chunks(modules, session: Session):
+    result = []
+    for m in modules:
+        chunks = session.exec(
+            select(DocumentChunk)
+            .join(ModuleChunk, ModuleChunk.chunk_id == DocumentChunk.id)
+            .where(ModuleChunk.module_id == m.id)
+            .order_by(ModuleChunk.order_index)
+        ).all()
+        result.append({
+            **m.model_dump(),
+            "chunks": [{"id": c.id, "chunk_index": c.chunk_index, "content": c.content} for c in chunks],
+        })
+    return result
 
 
 def _check_assigned(project_id: str, learner_id: str, session: Session):
@@ -24,13 +40,6 @@ def _check_assigned(project_id: str, learner_id: str, session: Session):
         raise HTTPException(status_code=403, detail="Not assigned to this project")
 
 
-async def _run_generate(project_id: str, learner_id: str, session: Session, openai_client, chat_model: str, path_name: str = "Standard"):
-    try:
-        await generate_learning_path(project_id, learner_id, session, openai_client, chat_model, path_name)
-    except Exception:
-        pass
-
-
 @router.get("/user/projects/{project_id}/learning-path/names")
 async def list_my_path_names(
     project_id: str,
@@ -38,58 +47,38 @@ async def list_my_path_names(
     session: Session = Depends(get_session),
 ):
     _check_assigned(project_id, learner.id, session)
+    # Return the published path's name (only one published path exists at a time)
     paths = session.exec(
         select(LearningPath).where(
             LearningPath.project_id == project_id,
-            LearningPath.learner_id == learner.id,
+            LearningPath.is_published == True,
         )
     ).all()
-    seen = {}
-    for p in sorted(paths, key=lambda x: x.generated_at, reverse=True):
-        if p.path_name not in seen:
-            seen[p.path_name] = p.generated_at.isoformat()
-    return [{"path_name": k, "generated_at": v} for k, v in seen.items()]
+    return [{"path_name": p.path_name, "generated_at": p.generated_at.isoformat()} for p in paths]
 
 
 @router.get("/user/projects/{project_id}/learning-path")
 async def get_my_learning_path(
     project_id: str,
-    request: Request,
-    background_tasks: BackgroundTasks,
-    path_name: str = Query(default="Standard"),
     learner=Depends(require_learner),
     session: Session = Depends(get_session),
 ):
     _check_assigned(project_id, learner.id, session)
 
     path = session.exec(
-        select(LearningPath)
-        .where(
+        select(LearningPath).where(
             LearningPath.project_id == project_id,
-            LearningPath.learner_id == learner.id,
-            LearningPath.path_name == path_name,
+            LearningPath.is_published == True,
         )
-        .order_by(LearningPath.generated_at.desc())
     ).first()
 
     if not path:
-        # Auto-generate on first request for this path_name
-        openai_client = request.app.state.openai_client
-        background_tasks.add_task(
-            _run_generate,
-            project_id,
-            learner.id,
-            session,
-            openai_client,
-            settings.azure_openai_chat_deployment,
-            path_name,
-        )
-        return {"status": "generating", "path_name": path_name, "modules": []}
+        return {"status": "not_published", "modules": []}
 
     modules = session.exec(
         select(LearningModule)
         .where(LearningModule.learning_path_id == path.id)
-        .order_by(LearningModule.order_index)
+        .order_by(LearningModule.week_number, LearningModule.order_index)
     ).all()
 
     completed_ids = set(
@@ -98,12 +87,13 @@ async def get_my_learning_path(
         ).all()
     )
 
+    modules_with_chunks = _attach_chunks(modules, session)
     return {
         **path.model_dump(),
         "status": "ready",
         "modules": [
-            {**m.model_dump(), "completed": m.id in completed_ids}
-            for m in modules
+            {**m, "completed": m["id"] in completed_ids}
+            for m in modules_with_chunks
         ],
     }
 

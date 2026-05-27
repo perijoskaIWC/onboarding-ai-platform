@@ -10,6 +10,10 @@ export const assignLearner = (projectId, learnerId) =>
   api.post(`/admin/projects/${projectId}/learners`, { learner_id: learnerId }).then((r) => r.data)
 export const removeLearner = (projectId, learnerId) =>
   api.delete(`/admin/projects/${projectId}/learners/${learnerId}`)
+export const getAvailableLearners = (projectId) =>
+  api.get(`/admin/projects/${projectId}/learners/available`).then((r) => r.data)
+export const bulkAssignLearners = (projectId, learnerIds) =>
+  api.post(`/admin/projects/${projectId}/learners/bulk`, { learner_ids: learnerIds }).then((r) => r.data)
 
 // Learner
 export const listLearnerProjects = () => api.get('/user/projects').then((r) => r.data)

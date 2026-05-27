@@ -16,10 +16,13 @@ export const adminGetLearningPath = (projectId, pathName = null) =>
     params: pathName ? { path_name: pathName } : {},
   });
 
-export const adminTriggerLearningPath = (projectId, pathName = 'Standard') =>
+export const adminTriggerLearningPath = (projectId, instruction = '') =>
   api.post(`/admin/projects/${projectId}/learning-path`, null, {
-    params: { path_name: pathName },
+    params: { instruction },
   });
 
 export const adminListPathNames = (projectId) =>
   api.get(`/admin/projects/${projectId}/learning-path/names`);
+
+export const adminPublishLearningPath = (projectId, pathId) =>
+  api.patch(`/admin/projects/${projectId}/learning-path/${pathId}/publish`);

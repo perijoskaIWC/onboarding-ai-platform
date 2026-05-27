@@ -13,3 +13,4 @@ class LearningPath(SQLModel, table=True):
     generated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     overview: str = Field(default="")
     path_name: str = Field(default="Standard", sa_column_kwargs={"server_default": "Standard"})
+    is_published: bool = Field(default=False, sa_column_kwargs={"server_default": "false"})

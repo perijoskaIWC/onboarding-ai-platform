@@ -13,3 +13,6 @@ export const listDocuments = (projectId) =>
 
 export const deleteDocument = (projectId, docId) =>
   api.delete(`/admin/projects/${projectId}/documents/${docId}`);
+
+export const reprocessDocument = (projectId, docId) =>
+  api.post(`/admin/projects/${projectId}/documents/${docId}/reprocess`);

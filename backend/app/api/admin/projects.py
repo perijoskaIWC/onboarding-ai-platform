@@ -16,6 +16,9 @@ from ...models.question import Question
 from ...models.quiz_attempt import QuizAttempt
 from ...models.learner_progress import LearnerProgress
 from ...models.module_completion import ModuleCompletion
+from ...models.module_chunk import ModuleChunk
+from ...models.adaptive_question import AdaptiveQuestion
+from ...models.weekly_plan import WeeklyPlan
 from sqlmodel import delete
 
 router = APIRouter(prefix="/projects", tags=["admin-projects"])
@@ -28,6 +31,7 @@ class ProjectCreate(BaseModel):
     chunk_overlap: int = 50
     rag_top_k: int = 5
     quiz_length: int = 10
+    duration_weeks: int = 4
 
 
 class ProjectUpdate(BaseModel):
@@ -37,10 +41,15 @@ class ProjectUpdate(BaseModel):
     chunk_overlap: Optional[int] = None
     rag_top_k: Optional[int] = None
     quiz_length: Optional[int] = None
+    duration_weeks: Optional[int] = None
 
 
 class AssignLearnerRequest(BaseModel):
     learner_id: str
+
+
+class BulkAssignRequest(BaseModel):
+    learner_ids: list[str]
 
 
 def _get_project_or_404(project_id: str, admin_id: str, session: Session) -> Project:
@@ -125,11 +134,14 @@ async def delete_project(
     session.exec(delete(ProjectAssignment).where(ProjectAssignment.project_id == project_id))
     session.exec(delete(QuizAttempt).where(QuizAttempt.project_id == project_id))
     session.exec(delete(Question).where(Question.project_id == project_id))
+    session.exec(delete(AdaptiveQuestion).where(AdaptiveQuestion.project_id == project_id))
+    session.exec(delete(WeeklyPlan).where(WeeklyPlan.project_id == project_id))
     session.exec(delete(LearnerProgress).where(LearnerProgress.project_id == project_id))
     # module_completions → learning_modules → learning_paths
     lp_ids = select(LearningPath.id).where(LearningPath.project_id == project_id)
     lm_ids = select(LearningModule.id).where(LearningModule.learning_path_id.in_(lp_ids))
     session.exec(delete(ModuleCompletion).where(ModuleCompletion.module_id.in_(lm_ids)))
+    session.exec(delete(ModuleChunk).where(ModuleChunk.module_id.in_(lm_ids)))
     session.exec(delete(LearningModule).where(LearningModule.learning_path_id.in_(lp_ids)))
     session.exec(delete(LearningPath).where(LearningPath.project_id == project_id))
     # documents and chunks
@@ -164,6 +176,48 @@ async def assign_learner(
     session.commit()
     session.refresh(assignment)
     return assignment
+
+
+@router.get("/{project_id}/learners/available")
+async def get_available_learners(
+    project_id: str,
+    admin=Depends(require_admin),
+    session: Session = Depends(get_session),
+):
+    _get_project_or_404(project_id, admin.id, session)
+    assigned_ids = set(
+        session.exec(
+            select(ProjectAssignment.learner_id).where(ProjectAssignment.project_id == project_id)
+        ).all()
+    )
+    all_learners = session.exec(select(User).where(User.role == "learner")).all()
+    return [{"id": u.id, "email": u.email} for u in all_learners if u.id not in assigned_ids]
+
+
+@router.post("/{project_id}/learners/bulk", status_code=201)
+async def bulk_assign_learners(
+    project_id: str,
+    body: BulkAssignRequest,
+    admin=Depends(require_admin),
+    session: Session = Depends(get_session),
+):
+    _get_project_or_404(project_id, admin.id, session)
+    added = 0
+    for lid in body.learner_ids:
+        learner = session.get(User, lid)
+        if not learner or learner.role != "learner":
+            continue
+        existing = session.exec(
+            select(ProjectAssignment).where(
+                ProjectAssignment.project_id == project_id,
+                ProjectAssignment.learner_id == lid,
+            )
+        ).first()
+        if not existing:
+            session.add(ProjectAssignment(project_id=project_id, learner_id=lid))
+            added += 1
+    session.commit()
+    return {"added": added}
 
 
 @router.delete("/{project_id}/learners/{learner_id}", status_code=204)

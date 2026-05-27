@@ -19,7 +19,11 @@ async def generate_learning_path(
     openai_client: AsyncOpenAI,
     chat_model: str,
     path_name: str = "Standard",
+    duration_weeks: int = 4,
+    custom_instruction: str = "",
 ) -> LearningPath:
+    from ..models.module_chunk import ModuleChunk
+
     chunks = session.exec(
         select(DocumentChunk)
         .where(DocumentChunk.project_id == project_id)
@@ -29,21 +33,39 @@ async def generate_learning_path(
     if not chunks:
         raise ValueError("No document chunks available for this project")
 
-    corpus = "\n\n---\n\n".join(c.content for c in chunks[:80])
+    import random
+    sample = random.sample(chunks, min(120, len(chunks)))
+    sample.sort(key=lambda c: (c.document_id, c.chunk_index))
 
-    path_hints = {
-        "Fast Track": "Focus on the most essential concepts only. Keep modules concise — aim for 3-4 modules.",
-        "In-Depth": "Cover all material thoroughly with detailed explanations. Include 6-7 modules with rich summaries.",
-        "Standard": "Balance breadth and depth. Include 4-5 modules ordered from foundational to advanced.",
-    }
-    style_hint = path_hints.get(path_name, f"This is a '{path_name}' path. Tailor the depth and breadth accordingly.")
+    # Number chunks so the AI can reference them by index
+    numbered_corpus = "\n\n---\n\n".join(
+        f"[Chunk {i}]\n{c.content}" for i, c in enumerate(sample)
+    )
+
+    # Scale module count to duration: ~2 modules per week, min 3
+    min_modules = max(3, duration_weeks)
+    max_modules = max(4, duration_weeks * 2)
+
+    if custom_instruction.strip():
+        style_hint = custom_instruction.strip()
+    else:
+        style_hint = "Balance breadth and depth, ordered from foundational to advanced."
+
+    style_hint += f" Create between {min_modules} and {max_modules} modules total, aiming for roughly 1-2 modules per week."
 
     system_prompt = (
         "You are an expert onboarding curriculum designer. "
-        "Given the provided learning material, create a structured learning path. "
-        f"{style_hint} "
+        "Given the numbered document chunks below, create a structured learning path spread across "
+        f"{duration_weeks} weeks. {style_hint} "
+        f"Distribute modules across weeks 1 to {duration_weeks}. "
+        "Multiple modules may share the same week. "
+        "For each module, list the indices of ALL chunks that belong to that topic in 'chunk_indices'. "
+        "Every chunk must be assigned to at least one module — do not leave any chunk unassigned. "
         "Respond ONLY with valid JSON matching this schema exactly:\n"
-        '{"overview": "<string>", "modules": [{"title": "<string>", "summary": "<string>", "key_concepts": "<comma-separated string>"}]}\n'
+        '{"overview": "<string>", "modules": [{"title": "<string>", "summary": "<string>", '
+        '"key_concepts": "<comma-separated string>", '
+        f'"week_number": <integer 1 to {duration_weeks}>, '
+        '"chunk_indices": [<integer>, ...]}]}\n'
         "No markdown fences."
     )
 
@@ -51,7 +73,7 @@ async def generate_learning_path(
         model=chat_model,
         messages=[
             {"role": "system", "content": system_prompt},
-            {"role": "user", "content": f"Learning material:\n\n{corpus}"},
+            {"role": "user", "content": f"Learning material:\n\n{numbered_corpus}"},
         ],
         temperature=0.3,
         response_format={"type": "json_object"},
@@ -70,15 +92,24 @@ async def generate_learning_path(
     session.flush()
 
     for i, mod in enumerate(data.get("modules", [])):
-        session.add(
-            LearningModule(
-                learning_path_id=path.id,
-                order_index=i,
-                title=mod.get("title", ""),
-                summary=mod.get("summary", ""),
-                key_concepts=mod.get("key_concepts", ""),
-            )
+        lm = LearningModule(
+            learning_path_id=path.id,
+            order_index=i,
+            title=mod.get("title", ""),
+            summary=mod.get("summary", ""),
+            key_concepts=mod.get("key_concepts", ""),
+            week_number=max(1, min(int(mod.get("week_number", 1)), duration_weeks)),
         )
+        session.add(lm)
+        session.flush()  # need lm.id before linking chunks
+
+        for order, ci in enumerate(mod.get("chunk_indices", [])):
+            if isinstance(ci, int) and 0 <= ci < len(sample):
+                session.add(ModuleChunk(
+                    module_id=lm.id,
+                    chunk_id=sample[ci].id,
+                    order_index=order,
+                ))
 
     session.commit()
     session.refresh(path)

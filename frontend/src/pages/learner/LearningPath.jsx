@@ -1,14 +1,7 @@
 import { useState, useEffect } from 'react'
 import { useParams } from 'react-router-dom'
-import { getLearningPath, listMyPathNames, completeModule } from '../../services/learningPath'
-
-const PATH_OPTIONS = ['Standard', 'Fast Track', 'In-Depth']
-
-const PATH_META = {
-  'Standard':   { color: 'indigo', label: 'Balanced pace covering all key topics' },
-  'Fast Track': { color: 'violet', label: 'Accelerated path for fast learners' },
-  'In-Depth':   { color: 'blue',   label: 'Deep dives with extended context' },
-}
+import { getLearningPath, completeModule } from '../../services/learningPath'
+import ReadingMaterial from '../../components/ReadingMaterial'
 
 function NodeIcon({ completed, active, index }) {
   if (completed) {
@@ -47,15 +40,13 @@ export default function LearningPath() {
   const [data, setData] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
-  const [pathName, setPathName] = useState('Standard')
-  const [availablePaths, setAvailablePaths] = useState([])
   const [completing, setCompleting] = useState(null)
 
-  async function load(name) {
+  async function load() {
     setLoading(true)
     setError('')
     try {
-      const res = await getLearningPath(projectId, name)
+      const res = await getLearningPath(projectId)
       setData(res.data)
     } catch {
       setError('Failed to load learning path.')
@@ -64,31 +55,13 @@ export default function LearningPath() {
     }
   }
 
-  async function loadPathNames() {
-    try {
-      const res = await listMyPathNames(projectId)
-      setAvailablePaths(res.data.map((p) => p.path_name))
-    } catch {
-      // non-fatal
-    }
-  }
-
-  useEffect(() => {
-    loadPathNames()
-    load(pathName)
-  }, [projectId])
-
-  async function switchPath(name) {
-    setPathName(name)
-    await load(name)
-    await loadPathNames()
-  }
+  useEffect(() => { load() }, [projectId])
 
   async function handleComplete(moduleId) {
     setCompleting(moduleId)
     try {
       await completeModule(projectId, moduleId)
-      await load(pathName)
+      await load()
     } finally {
       setCompleting(null)
     }
@@ -116,59 +89,39 @@ export default function LearningPath() {
     </div>
   )
 
-  if (data?.status === 'generating') {
-    return (
-      <div className="p-8 max-w-2xl mx-auto">
-        <div className="bg-indigo-50 border border-indigo-100 rounded-xl p-8 text-center">
-          <div className="w-12 h-12 rounded-full bg-indigo-100 mx-auto flex items-center justify-center mb-4">
-            <svg className="w-5 h-5 text-indigo-500 animate-spin" fill="none" viewBox="0 0 24 24">
-              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z" />
-            </svg>
-          </div>
-          <p className="text-indigo-800 font-semibold">Generating your {pathName} path…</p>
-          <p className="text-indigo-500 text-sm mt-1">This takes a few seconds. Refresh when ready.</p>
-        </div>
+  if (!data || data.status === 'not_published') return (
+    <div className="p-8 max-w-2xl mx-auto">
+      <div className="bg-amber-50 border border-amber-100 rounded-xl p-8 text-center">
+        <p className="text-amber-800 font-semibold">No learning path available yet</p>
+        <p className="text-amber-600 text-sm mt-1">Your admin hasn't published a learning path for this project.</p>
       </div>
-    )
-  }
+    </div>
+  )
 
-  const modules = data?.modules ?? []
+  const modules = data.modules ?? []
   const completed = modules.filter((m) => m.completed).length
   const pct = modules.length ? Math.round((completed / modules.length) * 100) : 0
   const firstIncomplete = modules.findIndex((m) => !m.completed)
+
+  // Group by week for the week-badge header
+  const byWeek = {}
+  for (const m of modules) {
+    const w = m.week_number ?? 1
+    if (!byWeek[w]) byWeek[w] = []
+    byWeek[w].push(m)
+  }
+  const weekStarts = new Set(
+    Object.values(byWeek).map((grp) => grp[0].id)
+  )
 
   return (
     <div className="p-8 max-w-2xl mx-auto">
       {/* Header */}
       <div className="mb-6">
         <h1 className="text-2xl font-bold text-slate-900">Learning Path</h1>
-        {data?.overview && (
+        {data.overview && (
           <p className="text-sm text-slate-500 mt-1 leading-relaxed">{data.overview}</p>
         )}
-      </div>
-
-      {/* Path switcher */}
-      <div className="flex flex-wrap gap-2 mb-6">
-        {PATH_OPTIONS.map((opt) => {
-          const isActive = pathName === opt
-          const isAvailable = availablePaths.includes(opt)
-          return (
-            <button
-              key={opt}
-              onClick={() => switchPath(opt)}
-              className={`px-4 py-1.5 text-xs font-medium rounded-full border transition-all duration-150 ${
-                isActive
-                  ? 'bg-indigo-600 text-white border-indigo-600 shadow-sm'
-                  : isAvailable
-                  ? 'bg-white text-indigo-600 border-indigo-200 hover:border-indigo-400 hover:bg-indigo-50'
-                  : 'bg-white text-slate-400 border-slate-200 hover:bg-slate-50 cursor-default'
-              }`}
-            >
-              {opt}
-            </button>
-          )
-        })}
       </div>
 
       {/* Progress summary */}
@@ -191,7 +144,7 @@ export default function LearningPath() {
         </div>
       </div>
 
-      {/* Timeline */}
+      {/* Timeline with week separators */}
       {modules.length === 0 ? (
         <div className="text-center py-12 text-slate-400 text-sm">No modules yet.</div>
       ) : (
@@ -200,16 +153,22 @@ export default function LearningPath() {
             const isCompleted = mod.completed
             const isActive = i === firstIncomplete
             const isLast = i === modules.length - 1
+            const isWeekStart = weekStarts.has(mod.id)
+            const weekNum = mod.week_number ?? 1
 
             return (
               <div key={mod.id}>
+                {isWeekStart && (
+                  <div className="flex items-center gap-3 mb-3 mt-2">
+                    <div className="h-px flex-1 bg-slate-100" />
+                    <span className="text-xs font-semibold text-slate-400 uppercase tracking-wide">Week {weekNum}</span>
+                    <div className="h-px flex-1 bg-slate-100" />
+                  </div>
+                )}
                 <div className="flex gap-4 items-start">
-                  {/* Node */}
                   <div className="flex flex-col items-center">
                     <NodeIcon completed={isCompleted} active={isActive} index={i} />
                   </div>
-
-                  {/* Card */}
                   <div className={`flex-1 mb-1 rounded-xl border transition-all duration-200 p-5 ${
                     isCompleted
                       ? 'bg-emerald-50/50 border-emerald-100'
@@ -219,15 +178,11 @@ export default function LearningPath() {
                   }`}>
                     <div className="flex items-start justify-between gap-4">
                       <div className="flex-1 min-w-0">
-                        <h3 className={`font-semibold text-sm leading-tight ${
-                          isCompleted ? 'text-emerald-800' : 'text-slate-800'
-                        }`}>
+                        <h3 className={`font-semibold text-sm leading-tight ${isCompleted ? 'text-emerald-800' : 'text-slate-800'}`}>
                           {mod.title}
                         </h3>
                         {mod.summary && (
-                          <p className={`text-xs mt-1 leading-relaxed ${
-                            isCompleted ? 'text-emerald-700/70' : 'text-slate-500'
-                          }`}>
+                          <p className={`text-xs mt-1 leading-relaxed ${isCompleted ? 'text-emerald-700/70' : 'text-slate-500'}`}>
                             {mod.summary}
                           </p>
                         )}
@@ -240,8 +195,8 @@ export default function LearningPath() {
                             ))}
                           </div>
                         )}
+                        <ReadingMaterial chunks={mod.chunks ?? []} />
                       </div>
-
                       {isCompleted ? (
                         <span className="shrink-0 inline-flex items-center gap-1 px-2.5 py-1 text-xs font-medium bg-emerald-100 text-emerald-700 rounded-full">
                           <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2.5">
@@ -265,8 +220,6 @@ export default function LearningPath() {
                     </div>
                   </div>
                 </div>
-
-                {/* Connector between nodes */}
                 {!isLast && (
                   <div className="flex gap-4">
                     <TimelineConnector completed={isCompleted} />

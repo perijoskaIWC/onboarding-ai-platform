@@ -20,6 +20,7 @@ from .models import quiz_attempt as _qa_model  # noqa: F401
 from .models import question as _question_model  # noqa: F401
 from .models import weekly_plan as _wp_model  # noqa: F401
 from .models import adaptive_question as _aq_model  # noqa: F401
+from .models import module_chunk as _mc2_model  # noqa: F401
 from .api.auth import router as auth_router
 from .api.admin.projects import router as admin_projects_router
 from .api.admin import documents as _admin_docs_module

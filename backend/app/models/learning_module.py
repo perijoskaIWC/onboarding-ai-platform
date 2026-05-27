@@ -11,3 +11,4 @@ class LearningModule(SQLModel, table=True):
     title: str
     summary: str
     key_concepts: str = Field(default="")
+    week_number: int = Field(default=1)

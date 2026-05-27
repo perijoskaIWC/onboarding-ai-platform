@@ -1,3 +1,4 @@
+import asyncio
 import tiktoken
 from openai import AsyncAzureOpenAI
 from sqlalchemy.engine import Engine
@@ -14,8 +15,7 @@ def chunk_text(text: str, chunk_size: int, overlap: int) -> list[str]:
     start = 0
     while start < len(tokens):
         end = min(start + chunk_size, len(tokens))
-        chunk_tokens = tokens[start:end]
-        chunks.append(enc.decode(chunk_tokens))
+        chunks.append(enc.decode(tokens[start:end]))
         if end == len(tokens):
             break
         start += chunk_size - overlap
@@ -23,8 +23,17 @@ def chunk_text(text: str, chunk_size: int, overlap: int) -> list[str]:
 
 
 async def embed_chunks(chunks: list[str], openai_client: AsyncAzureOpenAI, model: str) -> list[list[float]]:
-    response = await openai_client.embeddings.create(input=chunks, model=model, dimensions=1536)
-    return [item.embedding for item in response.data]
+    batch_size = 16
+    batches = [chunks[i:i + batch_size] for i in range(0, len(chunks), batch_size)]
+    sem = asyncio.Semaphore(3)
+
+    async def _embed_batch(batch):
+        async with sem:
+            response = await openai_client.embeddings.create(input=batch, model=model, dimensions=1536)
+            return [item.embedding for item in response.data]
+
+    results = await asyncio.gather(*[_embed_batch(b) for b in batches])
+    return [emb for batch_result in results for emb in batch_result]
 
 
 async def ingest_document(
@@ -66,6 +75,8 @@ async def ingest_document(
                         embedding=emb,
                     )
                 )
+                if i % 50 == 49:
+                    session.flush()
 
             document.ingestion_status = "ready"
             document.ingestion_error = None

@@ -8,10 +8,36 @@ from ...models.document_chunk import DocumentChunk
 from ...models.project import Project
 from ...models.learning_path import LearningPath
 from ...models.learning_module import LearningModule
+from ...models.module_chunk import ModuleChunk
 from ...models.question import Question
 from ...services.ingestion import ingest_document
 
 router = APIRouter(tags=["admin-documents"])
+
+
+def _clean_text(text: str) -> str:
+    import unicodedata
+    # Normalize unicode (e.g. fancy quotes, dashes, ellipsis)
+    text = unicodedata.normalize("NFKC", text)
+    # Replace common Windows-1252 bullet/dash variants with clean ASCII
+    replacements = {
+        "•": "-",   # bullet •
+        "‣": "-",   # triangular bullet
+        "●": "-",   # black circle ●
+        "–": "-",   # en-dash –
+        "—": "-",   # em-dash —
+        "‘": "'",   # left single quote '
+        "’": "'",   # right single quote '
+        "“": '"',   # left double quote "
+        "”": '"',   # right double quote "
+        "…": "...", # ellipsis …
+        " ": " ",   # non-breaking space
+        "\r\n": "\n",
+        "\r": "\n",
+    }
+    for src, dst in replacements.items():
+        text = text.replace(src, dst)
+    return text
 
 ALLOWED_TYPES = {"text/plain", "text/markdown", "text/x-markdown"}
 ALLOWED_EXTS = {".txt", ".md"}
@@ -40,7 +66,11 @@ async def upload_document(
         raise HTTPException(status_code=415, detail="Only .txt and .md files are supported")
 
     content = await file.read()
-    raw_text = content.decode("utf-8", errors="replace")
+    try:
+        raw_text = content.decode("utf-8")
+    except UnicodeDecodeError:
+        raw_text = content.decode("latin-1")  # covers Windows-1252
+    raw_text = _clean_text(raw_text)
     file_type = "md" if ext == ".md" else "txt"
 
     document = Document(
@@ -87,6 +117,32 @@ async def list_documents(
     return result
 
 
+@router.post("/admin/projects/{project_id}/documents/{doc_id}/reprocess", status_code=202)
+async def reprocess_document(
+    project_id: str,
+    doc_id: str,
+    request: Request,
+    background_tasks: BackgroundTasks,
+    admin=Depends(require_admin),
+    session: Session = Depends(get_session),
+):
+    _get_project_or_403(project_id, admin.id, session)
+    doc = session.get(Document, doc_id)
+    if not doc or doc.project_id != project_id:
+        raise HTTPException(status_code=404, detail="Document not found")
+    # clear old chunks and reset status
+    session.exec(delete(DocumentChunk).where(DocumentChunk.document_id == doc_id))
+    doc.ingestion_status = "pending"
+    doc.ingestion_error = None
+    session.add(doc)
+    session.commit()
+    openai_client = request.app.state.openai_client
+    background_tasks.add_task(
+        ingest_document, doc.id, engine, openai_client, settings.azure_openai_embedding_deployment
+    )
+    return {"id": doc.id, "ingestion_status": "pending"}
+
+
 @router.delete("/admin/projects/{project_id}/documents/{doc_id}", status_code=204)
 async def delete_document(
     project_id: str,
@@ -108,6 +164,8 @@ async def delete_document(
         if remaining is None:
             paths = session.exec(select(LearningPath).where(LearningPath.project_id == project_id)).all()
             for path in paths:
+                lm_ids = select(LearningModule.id).where(LearningModule.learning_path_id == path.id)
+                session.exec(delete(ModuleChunk).where(ModuleChunk.module_id.in_(lm_ids)))
                 session.exec(delete(LearningModule).where(LearningModule.learning_path_id == path.id))
             session.exec(delete(LearningPath).where(LearningPath.project_id == project_id))
             session.exec(delete(Question).where(Question.project_id == project_id))

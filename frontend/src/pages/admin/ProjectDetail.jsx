@@ -1,10 +1,10 @@
 import { useState, useEffect, useRef } from 'react'
 import { useParams, Link } from 'react-router-dom'
-import { getProject, assignLearner, removeLearner } from '../../services/projects'
-import { uploadDocument, listDocuments, deleteDocument } from '../../services/documents'
-import { adminGetLearningPath, adminTriggerLearningPath, adminListPathNames } from '../../services/learningPath'
+import { getProject, updateProject, assignLearner, removeLearner, getAvailableLearners, bulkAssignLearners } from '../../services/projects'
+import { uploadDocument, listDocuments, deleteDocument, reprocessDocument } from '../../services/documents'
+import { adminGetLearningPath, adminTriggerLearningPath, adminListPathNames, adminPublishLearningPath } from '../../services/learningPath'
 import { adminGenerateQuestions, adminListQuestions, adminPublishQuestion, adminPublishAll, adminUpdateQuestion, adminDeleteQuestion } from '../../services/quiz'
-import { adminListWeeklyPlans, adminCreateWeeklyPlan, adminUpdateWeeklyPlan, adminDeleteWeeklyPlan } from '../../services/weeklyPlan'
+import ReadingMaterial from '../../components/ReadingMaterial'
 
 const STATUS_COLORS = {
   pending:    'bg-amber-100 text-amber-700',
@@ -13,7 +13,12 @@ const STATUS_COLORS = {
   failed:     'bg-red-100 text-red-600',
 }
 
-const LP_PATH_OPTIONS = ['Standard', 'Fast Track', 'In-Depth']
+const LP_EXAMPLES = [
+  'Focus on practical skills, skip theory',
+  'Beginner-friendly, step by step',
+  'Senior staff, fast 2-week ramp-up',
+  'Include real-world scenarios',
+]
 
 const TABS = [
   { key: 'documents',     label: 'Documents' },
@@ -22,6 +27,43 @@ const TABS = [
   { key: 'schedule',      label: 'Schedule' },
   { key: 'learners',      label: 'Learners' },
 ]
+
+function GeneratingCard({ title, steps, activeStep }) {
+  return (
+    <div className="rounded-xl border border-indigo-100 bg-gradient-to-br from-indigo-50/60 to-violet-50/40 p-6">
+      <div className="flex items-center gap-3 mb-5">
+        <div className="w-8 h-8 rounded-full bg-indigo-600 flex items-center justify-center shrink-0">
+          <svg className="w-4 h-4 text-white animate-spin" fill="none" viewBox="0 0 24 24">
+            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z" />
+          </svg>
+        </div>
+        <div>
+          <p className="text-sm font-semibold text-indigo-900">{title}</p>
+          <p className="text-xs text-indigo-400 mt-0.5">This usually takes 15–30 seconds</p>
+        </div>
+      </div>
+      <div className="space-y-2">
+        {steps.map((step, i) => {
+          const done = i < activeStep
+          const active = i === activeStep
+          return (
+            <div key={i} className={`flex items-center gap-2.5 text-xs transition-all duration-300 ${done ? 'text-indigo-400 line-through' : active ? 'text-indigo-700 font-medium' : 'text-slate-300'}`}>
+              <span className={`w-4 h-4 rounded-full border flex items-center justify-center shrink-0 ${done ? 'bg-indigo-200 border-indigo-200' : active ? 'border-indigo-400 bg-white' : 'border-slate-200'}`}>
+                {done
+                  ? <svg className="w-2.5 h-2.5 text-indigo-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="3"><path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" /></svg>
+                  : active
+                  ? <span className="w-1.5 h-1.5 rounded-full bg-indigo-500 animate-pulse block" />
+                  : null}
+              </span>
+              {step}
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
 
 function EmptyState({ icon, title, description, action }) {
   return (
@@ -89,20 +131,27 @@ export default function ProjectDetail() {
   const [lpError, setLpError] = useState('')
   const [lpPathName, setLpPathName] = useState('Standard')
   const [lpAvailableNames, setLpAvailableNames] = useState([])
+  const [lpPublishing, setLpPublishing] = useState(false)
+  const [durationWeeks, setDurationWeeks] = useState(4)
+  const [lpInstruction, setLpInstruction] = useState('')
+  const [lpGenerating, setLpGenerating] = useState(false)
+  const [lpGenStep, setLpGenStep] = useState(0)
   const lpPollRef = useRef(null)
+  const lpStepRef = useRef(null)
 
   const [questions, setQuestions] = useState([])
   const [qLoading, setQLoading] = useState(false)
+  const [qGenerating, setQGenerating] = useState(false)
+  const [qGenStep, setQGenStep] = useState(0)
   const [editingId, setEditingId] = useState(null)
   const [editForm, setEditForm] = useState({})
   const qPollRef = useRef(null)
+  const qStepRef = useRef(null)
 
-  const [weeklyPlans, setWeeklyPlans] = useState([])
-  const [wpLoading, setWpLoading] = useState(false)
-  const [wpEditingId, setWpEditingId] = useState(null)
-  const [wpForm, setWpForm] = useState({ week_number: '', title: '', description: '' })
-  const [wpError, setWpError] = useState('')
-  const [showWpForm, setShowWpForm] = useState(false)
+  const [availableLearners, setAvailableLearners] = useState([])
+  const [selectedLearnerIds, setSelectedLearnerIds] = useState(new Set())
+  const [availableLoading, setAvailableLoading] = useState(false)
+  const [bulkAssigning, setBulkAssigning] = useState(false)
 
   // Sliding tab indicator
   useEffect(() => {
@@ -115,7 +164,11 @@ export default function ProjectDetail() {
   }, [tab])
 
   async function load() {
-    try { setProject(await getProject(projectId)) }
+    try {
+      const p = await getProject(projectId)
+      setProject(p)
+      setDurationWeeks(p.duration_weeks ?? 4)
+    }
     catch { setError('Failed to load project.') }
     finally { setLoading(false) }
   }
@@ -152,15 +205,26 @@ export default function ProjectDetail() {
     finally { setQLoading(false) }
   }
 
-  async function loadWeeklyPlans() {
-    setWpLoading(true)
-    try { const res = await adminListWeeklyPlans(projectId); setWeeklyPlans(res.data) }
+  async function loadAvailableLearners() {
+    setAvailableLoading(true)
+    try { const data = await getAvailableLearners(projectId); setAvailableLearners(data) }
     catch { /* non-fatal */ }
-    finally { setWpLoading(false) }
+    finally { setAvailableLoading(false) }
+  }
+
+  async function handleBulkAssign(ids) {
+    setBulkAssigning(true)
+    try {
+      await bulkAssignLearners(projectId, [...ids])
+      setSelectedLearnerIds(new Set())
+      await load()
+      await loadAvailableLearners()
+    } catch (err) { setError(err.response?.data?.detail ?? 'Failed to assign learners.') }
+    finally { setBulkAssigning(false) }
   }
 
   useEffect(() => {
-    load(); loadDocs(); loadLp('Standard'); loadLpNames(); loadQuestions(); loadWeeklyPlans()
+    load(); loadDocs(); loadLp('Standard'); loadLpNames(); loadQuestions(); loadAvailableLearners()
     return () => {
       clearInterval(pollRef.current)
       clearInterval(lpPollRef.current)
@@ -191,34 +255,61 @@ export default function ProjectDetail() {
   }
 
   async function handleGenerateLp() {
-    setLpError(''); setLearningPath(null)
-    await adminTriggerLearningPath(projectId, lpPathName)
+    setLpError(''); setLearningPath(null); setLpGenerating(true); setLpGenStep(0)
+    await updateProject(projectId, { duration_weeks: durationWeeks })
+    await adminTriggerLearningPath(projectId, lpInstruction)
+    // Advance steps visually while polling
+    clearInterval(lpStepRef.current)
+    lpStepRef.current = setInterval(() => setLpGenStep((s) => Math.min(s + 1, 2)), 6000)
     clearInterval(lpPollRef.current)
     let attempts = 0
     lpPollRef.current = setInterval(async () => {
       attempts++
       try {
-        const res = await adminGetLearningPath(projectId, lpPathName)
-        if (res.data) { setLearningPath(res.data); await loadLpNames(); clearInterval(lpPollRef.current); lpPollRef.current = null; return }
+        const res = await adminGetLearningPath(projectId)
+        if (res.data) {
+          setLearningPath(res.data); await loadLpNames()
+          clearInterval(lpPollRef.current); lpPollRef.current = null
+          clearInterval(lpStepRef.current); lpStepRef.current = null
+          setLpGenerating(false); setLpGenStep(0)
+          return
+        }
       } catch (err) { if (err.response?.status !== 404) setLpError('Failed to load.') }
-      if (attempts >= 10) { clearInterval(lpPollRef.current); lpPollRef.current = null }
+      if (attempts >= 20) {
+        clearInterval(lpPollRef.current); lpPollRef.current = null
+        clearInterval(lpStepRef.current); lpStepRef.current = null
+        setLpGenerating(false)
+        setLpError('Generation timed out. Please try again.')
+      }
     }, 3000)
   }
 
   async function handleGenerateQuestions() {
     const hasPublished = questions.some((q) => q.is_published)
     if (hasPublished && !window.confirm('This will replace all questions, including published ones. Continue?')) return
-    setQuestions([])
+    setQuestions([]); setQGenerating(true); setQGenStep(0)
     await adminGenerateQuestions(projectId)
+    clearInterval(qStepRef.current)
+    qStepRef.current = setInterval(() => setQGenStep((s) => Math.min(s + 1, 2)), 5000)
     clearInterval(qPollRef.current)
     let attempts = 0
     qPollRef.current = setInterval(async () => {
       attempts++
       try {
         const res = await adminListQuestions(projectId)
-        if (res.data?.length > 0) { setQuestions(res.data); clearInterval(qPollRef.current); qPollRef.current = null; return }
+        if (res.data?.length > 0) {
+          setQuestions(res.data)
+          clearInterval(qPollRef.current); qPollRef.current = null
+          clearInterval(qStepRef.current); qStepRef.current = null
+          setQGenerating(false); setQGenStep(0)
+          return
+        }
       } catch { /* non-fatal */ }
-      if (attempts >= 10) { clearInterval(qPollRef.current); qPollRef.current = null }
+      if (attempts >= 15) {
+        clearInterval(qPollRef.current); qPollRef.current = null
+        clearInterval(qStepRef.current); qStepRef.current = null
+        setQGenerating(false)
+      }
     }, 3000)
   }
 
@@ -313,9 +404,19 @@ export default function ProjectDetail() {
                       <span className="text-slate-400 text-xs shrink-0">{doc.chunk_count} chunks</span>
                     )}
                   </div>
-                  <button onClick={() => deleteDocument(projectId, doc.id).then(loadDocs)} className="text-red-400 hover:text-red-600 text-xs shrink-0 font-medium">
-                    Delete
-                  </button>
+                  <div className="flex items-center gap-2 shrink-0">
+                    {(doc.ingestion_status === 'failed' || doc.ingestion_status === 'pending') && (
+                      <button
+                        onClick={() => reprocessDocument(projectId, doc.id).then(loadDocs)}
+                        className="text-indigo-500 hover:text-indigo-700 text-xs font-medium"
+                      >
+                        Retry
+                      </button>
+                    )}
+                    <button onClick={() => deleteDocument(projectId, doc.id).then(loadDocs)} className="text-red-400 hover:text-red-600 text-xs font-medium">
+                      Delete
+                    </button>
+                  </div>
                 </li>
               ))}
             </ul>
@@ -327,39 +428,89 @@ export default function ProjectDetail() {
       {tab === 'learning-path' && (
         <div className="bg-white rounded-xl border border-slate-100 shadow-sm p-6">
           <div className="flex items-center justify-between mb-4 flex-wrap gap-3">
-            <h2 className="text-base font-semibold text-slate-900">Learning Path</h2>
+            <div>
+              <h2 className="text-base font-semibold text-slate-900">Learning Path</h2>
+              {learningPath?.is_published && (
+                <span className="inline-flex items-center gap-1 text-xs font-medium text-emerald-700 bg-emerald-50 border border-emerald-100 px-2 py-0.5 rounded-full mt-1">
+                  <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2.5"><path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" /></svg>
+                  Published — learners can see this
+                </span>
+              )}
+            </div>
             <div className="flex items-center gap-2 flex-wrap">
-              <div className="flex gap-1">
-                {LP_PATH_OPTIONS.map((opt) => (
-                  <button
-                    key={opt}
-                    onClick={() => { setLpPathName(opt); setLearningPath(null); loadLp(opt) }}
-                    className={`px-3 py-1 text-xs rounded-full border font-medium transition-colors ${
-                      lpPathName === opt ? 'bg-indigo-600 text-white border-indigo-600'
-                      : lpAvailableNames.includes(opt) ? 'bg-white text-indigo-600 border-indigo-200 hover:bg-indigo-50'
-                      : 'bg-white text-slate-400 border-slate-200 hover:bg-slate-50'
-                    }`}
-                  >
-                    {opt}
-                  </button>
-                ))}
+              <div className="flex items-center gap-1.5">
+                <label className="text-xs text-slate-500 whitespace-nowrap">Weeks</label>
+                <input
+                  type="number" min="1" max="52"
+                  value={durationWeeks}
+                  onChange={(e) => setDurationWeeks(Number(e.target.value))}
+                  className="w-14 border border-slate-200 rounded-lg px-2 py-1 text-sm text-center focus:outline-none focus:ring-2 focus:ring-indigo-400"
+                />
               </div>
               <button
                 onClick={handleGenerateLp}
-                className="text-xs bg-indigo-600 text-white px-3 py-1.5 rounded-lg hover:bg-indigo-700 font-medium"
+                disabled={lpGenerating}
+                className="text-xs bg-indigo-600 text-white px-3 py-1.5 rounded-lg hover:bg-indigo-700 font-medium disabled:opacity-50"
               >
-                Generate {lpPathName}
+                {lpGenerating ? 'Generating…' : 'Generate'}
               </button>
+              {learningPath && !learningPath.is_published && (
+                <button
+                  onClick={async () => {
+                    setLpPublishing(true)
+                    try {
+                      await adminPublishLearningPath(projectId, learningPath.id)
+                      setLearningPath((lp) => ({ ...lp, is_published: true }))
+                    } catch { setLpError('Failed to publish.') }
+                    finally { setLpPublishing(false) }
+                  }}
+                  disabled={lpPublishing}
+                  className="text-sm bg-emerald-600 text-white px-4 py-2 rounded-lg hover:bg-emerald-700 font-semibold disabled:opacity-50 shadow-sm"
+                >
+                  {lpPublishing ? 'Publishing…' : '✓ Publish to Learners'}
+                </button>
+              )}
             </div>
           </div>
+          {/* Instruction input */}
+          <div className="mb-4">
+            <div className="relative">
+              <textarea
+                rows={2}
+                placeholder="Describe the learning style… e.g. &quot;Focus on practical skills, no theory&quot;"
+                value={lpInstruction}
+                onChange={(e) => setLpInstruction(e.target.value)}
+                className="w-full border border-slate-200 rounded-xl px-4 py-3 text-sm text-slate-800 placeholder:text-slate-300 focus:outline-none focus:ring-2 focus:ring-indigo-400 focus:border-transparent resize-none transition"
+              />
+            </div>
+            <div className="flex flex-wrap gap-1.5 mt-2">
+              {LP_EXAMPLES.map((ex) => (
+                <button
+                  key={ex}
+                  type="button"
+                  onClick={() => setLpInstruction(ex)}
+                  className="text-xs px-2.5 py-1 rounded-full border border-slate-200 text-slate-500 hover:border-indigo-300 hover:text-indigo-600 hover:bg-indigo-50 transition-colors"
+                >
+                  {ex}
+                </button>
+              ))}
+            </div>
+          </div>
+
           {lpError && <p className="text-red-500 text-sm mb-3">{lpError}</p>}
-          {lpLoading ? (
+          {lpGenerating ? (
+            <GeneratingCard
+              title="AI is building your learning path…"
+              steps={['Reading your documents', 'Structuring modules by week', 'Assigning reading material']}
+              activeStep={lpGenStep}
+            />
+          ) : lpLoading ? (
             <div className="space-y-2 animate-pulse">{[1,2,3].map(i => <div key={i} className="h-12 bg-slate-100 rounded-lg" />)}</div>
           ) : !learningPath ? (
             <EmptyState
               icon={<svg className="w-6 h-6 text-slate-300" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="1.5"><path strokeLinecap="round" strokeLinejoin="round" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" /></svg>}
               title="No learning path yet"
-              description="Generate a structured learning path from your uploaded documents."
+              description="Set the number of weeks, then generate a structured learning path from your uploaded documents."
               action={
                 <button onClick={handleGenerateLp} className="bg-indigo-600 text-white px-5 py-2 rounded-lg text-sm font-medium hover:bg-indigo-700 shadow-sm">
                   Generate {lpPathName}
@@ -369,19 +520,40 @@ export default function ProjectDetail() {
           ) : (
             <div>
               {learningPath.overview && (
-                <p className="text-sm text-slate-500 mb-4 leading-relaxed">{learningPath.overview}</p>
+                <p className="text-sm text-slate-500 mb-5 leading-relaxed">{learningPath.overview}</p>
               )}
-              <ol className="space-y-2">
-                {learningPath.modules?.map((m, i) => (
-                  <li key={m.id} className="flex items-start gap-3 border border-slate-100 rounded-lg p-3.5">
-                    <span className="w-6 h-6 rounded-full bg-indigo-50 text-indigo-600 text-xs font-bold flex items-center justify-center shrink-0 mt-0.5">{i + 1}</span>
-                    <div>
-                      <p className="font-medium text-sm text-slate-800">{m.title}</p>
-                      {m.summary && <p className="text-xs text-slate-500 mt-0.5">{m.summary}</p>}
+              {(() => {
+                const byWeek = {}
+                for (const m of (learningPath.modules ?? [])) {
+                  const w = m.week_number ?? 1
+                  if (!byWeek[w]) byWeek[w] = []
+                  byWeek[w].push(m)
+                }
+                return Object.keys(byWeek).sort((a, b) => Number(a) - Number(b)).map((week) => (
+                  <div key={week} className="mb-5">
+                    <div className="flex items-center gap-2 mb-2">
+                      <span className="w-7 h-7 rounded-full bg-indigo-600 text-white text-xs font-bold flex items-center justify-center shrink-0">{week}</span>
+                      <span className="text-sm font-semibold text-slate-700">Week {week}</span>
                     </div>
-                  </li>
-                ))}
-              </ol>
+                    <div className="ml-9 space-y-2">
+                      {byWeek[week].map((m) => (
+                        <div key={m.id} className="border border-slate-100 rounded-lg p-3.5">
+                          <p className="font-medium text-sm text-slate-800">{m.title}</p>
+                          {m.summary && <p className="text-xs text-slate-500 mt-0.5 leading-relaxed">{m.summary}</p>}
+                          {m.key_concepts && (
+                            <div className="flex flex-wrap gap-1 mt-2">
+                              {m.key_concepts.split(',').slice(0, 4).map((c) => (
+                                <span key={c} className="text-xs bg-slate-100 text-slate-500 px-2 py-0.5 rounded-full">{c.trim()}</span>
+                              ))}
+                            </div>
+                          )}
+                          <ReadingMaterial chunks={m.chunks ?? []} />
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ))
+              })()}
             </div>
           )}
         </div>
@@ -410,14 +582,21 @@ export default function ProjectDetail() {
               )}
               <button
                 onClick={handleGenerateQuestions}
-                className="text-xs bg-indigo-600 text-white px-3 py-1.5 rounded-lg hover:bg-indigo-700 font-medium"
+                disabled={qGenerating}
+                className="text-xs bg-indigo-600 text-white px-3 py-1.5 rounded-lg hover:bg-indigo-700 font-medium disabled:opacity-50"
               >
-                Regenerate
+                {qGenerating ? 'Generating…' : 'Regenerate'}
               </button>
             </div>
           </div>
 
-          {qLoading ? (
+          {qGenerating ? (
+            <GeneratingCard
+              title="AI is writing quiz questions…"
+              steps={['Analysing document content', 'Drafting multiple-choice questions', 'Validating answers and explanations']}
+              activeStep={qGenStep}
+            />
+          ) : qLoading ? (
             <div className="space-y-2 animate-pulse">{[1,2,3].map(i => <div key={i} className="h-12 bg-slate-100 rounded-lg" />)}</div>
           ) : questions.length === 0 ? (
             <EmptyState
@@ -532,165 +711,196 @@ export default function ProjectDetail() {
       {/* ── SCHEDULE ─────────────────────────────────────────── */}
       {tab === 'schedule' && (
         <div className="bg-white rounded-xl border border-slate-100 shadow-sm p-6">
-          <div className="flex items-center justify-between mb-4">
-            <h2 className="text-base font-semibold text-slate-900">Weekly Schedule</h2>
-            <button
-              onClick={() => { setShowWpForm(true); setWpEditingId(null); setWpForm({ week_number: weeklyPlans.length + 1, title: '', description: '' }); setWpError('') }}
-              className="text-xs bg-indigo-600 text-white px-3 py-1.5 rounded-lg hover:bg-indigo-700 font-medium"
-            >
-              + Add Week
-            </button>
+          <div className="flex items-center justify-between mb-1">
+            <h2 className="text-base font-semibold text-slate-900">Schedule Preview</h2>
+            {learningPath?.is_published && (
+              <span className="inline-flex items-center gap-1 text-xs font-medium text-emerald-700 bg-emerald-50 border border-emerald-100 px-2 py-0.5 rounded-full">
+                <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2.5"><path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" /></svg>
+                Published
+              </span>
+            )}
           </div>
+          <p className="text-xs text-slate-400 mb-5">Learners see this in their Schedule tab once published.</p>
 
-          {wpError && <p className="text-red-500 text-sm mb-3">{wpError}</p>}
-
-          {(showWpForm || wpEditingId) && (
-            <form
-              onSubmit={async (e) => {
-                e.preventDefault(); setWpError('')
-                if (!wpForm.title.trim()) { setWpError('Title is required.'); return }
-                if (!wpForm.week_number || wpForm.week_number < 1) { setWpError('Week number must be >= 1.'); return }
-                try {
-                  if (wpEditingId) {
-                    await adminUpdateWeeklyPlan(projectId, wpEditingId, { week_number: Number(wpForm.week_number), title: wpForm.title, description: wpForm.description })
-                  } else {
-                    await adminCreateWeeklyPlan(projectId, { week_number: Number(wpForm.week_number), title: wpForm.title, description: wpForm.description })
-                  }
-                  await loadWeeklyPlans(); setShowWpForm(false); setWpEditingId(null)
-                } catch (err) { setWpError(err.response?.data?.detail ?? 'Failed to save.') }
-              }}
-              className="border border-slate-200 rounded-xl p-4 mb-4 space-y-3 bg-slate-50"
-            >
-              <div className="flex gap-2">
-                <input
-                  type="number" min="1" placeholder="Week #"
-                  value={wpForm.week_number}
-                  onChange={(e) => setWpForm((f) => ({ ...f, week_number: e.target.value }))}
-                  className="w-20 border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400"
-                  required
-                />
-                <input
-                  type="text" placeholder="Title (e.g. Foundations)"
-                  value={wpForm.title}
-                  onChange={(e) => setWpForm((f) => ({ ...f, title: e.target.value }))}
-                  className="flex-1 border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400"
-                  required
-                />
-              </div>
-              <textarea
-                placeholder="Description (optional)"
-                value={wpForm.description}
-                onChange={(e) => setWpForm((f) => ({ ...f, description: e.target.value }))}
-                className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm resize-none focus:outline-none"
-                rows={2}
-              />
-              <div className="flex gap-2">
-                <button type="submit" className="bg-indigo-600 text-white px-4 py-1.5 rounded-lg text-xs font-medium hover:bg-indigo-700">
-                  {wpEditingId ? 'Save' : 'Add Week'}
-                </button>
-                <button type="button" onClick={() => { setShowWpForm(false); setWpEditingId(null) }} className="text-slate-500 px-3 py-1.5 rounded-lg text-xs hover:bg-slate-100">
-                  Cancel
-                </button>
-              </div>
-            </form>
-          )}
-
-          {wpLoading ? (
-            <div className="space-y-2 animate-pulse">{[1,2].map(i => <div key={i} className="h-14 bg-slate-100 rounded-lg" />)}</div>
-          ) : weeklyPlans.length === 0 && !showWpForm ? (
+          {!learningPath ? (
             <EmptyState
               icon={<svg className="w-6 h-6 text-slate-300" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="1.5"><path strokeLinecap="round" strokeLinejoin="round" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" /></svg>}
-              title="No schedule yet"
-              description="Add weekly topics to guide learners through the onboarding material at a steady pace."
+              title="No learning path yet"
+              description="Generate a learning path from the Learning Path tab, then publish it."
               action={
-                <button
-                  onClick={() => { setShowWpForm(true); setWpForm({ week_number: 1, title: '', description: '' }) }}
-                  className="bg-indigo-600 text-white px-5 py-2 rounded-lg text-sm font-medium hover:bg-indigo-700 shadow-sm"
-                >
-                  Add First Week
+                <button onClick={() => setTab('learning-path')} className="bg-indigo-600 text-white px-5 py-2 rounded-lg text-sm font-medium hover:bg-indigo-700 shadow-sm">
+                  Go to Learning Path
                 </button>
               }
             />
           ) : (
-            <ol className="space-y-2">
-              {weeklyPlans.map((plan) => (
-                <li key={plan.id} className="border border-slate-100 rounded-lg p-4 flex items-start justify-between gap-3">
-                  <div className="flex items-start gap-3 min-w-0">
-                    <span className="w-7 h-7 rounded-full bg-indigo-50 text-indigo-600 text-xs font-bold flex items-center justify-center shrink-0 mt-0.5">{plan.week_number}</span>
-                    <div className="min-w-0">
-                      <p className="font-medium text-sm text-slate-800">{plan.title}</p>
-                      {plan.description && <p className="text-xs text-slate-500 mt-0.5 leading-relaxed">{plan.description}</p>}
+            <div>
+              {!learningPath.is_published && (
+                <div className="bg-amber-50 border border-amber-100 rounded-xl p-4 mb-5 flex items-center justify-between gap-3">
+                  <p className="text-xs text-amber-700 leading-relaxed">
+                    This path is <strong>not published</strong> yet. Learners won't see it until you publish it.
+                  </p>
+                  <button
+                    onClick={async () => {
+                      setLpPublishing(true)
+                      try {
+                        await adminPublishLearningPath(projectId, learningPath.id)
+                        setLearningPath((lp) => ({ ...lp, is_published: true }))
+                      } catch { setLpError('Failed to publish.') }
+                      finally { setLpPublishing(false) }
+                    }}
+                    disabled={lpPublishing}
+                    className="shrink-0 text-xs bg-emerald-600 text-white px-4 py-2 rounded-lg hover:bg-emerald-700 font-medium disabled:opacity-50"
+                  >
+                    {lpPublishing ? 'Publishing…' : 'Publish Now'}
+                  </button>
+                </div>
+              )}
+              {learningPath.overview && (
+                <p className="text-sm text-slate-500 mb-5 leading-relaxed">{learningPath.overview}</p>
+              )}
+              {(() => {
+                const byWeek = {}
+                for (const m of (learningPath.modules ?? [])) {
+                  const w = m.week_number ?? 1
+                  if (!byWeek[w]) byWeek[w] = []
+                  byWeek[w].push(m)
+                }
+                return Object.keys(byWeek).sort((a, b) => Number(a) - Number(b)).map((week) => (
+                  <div key={week} className="mb-5">
+                    <div className="flex items-center gap-2 mb-2">
+                      <span className="w-7 h-7 rounded-full bg-indigo-600 text-white text-xs font-bold flex items-center justify-center shrink-0">{week}</span>
+                      <span className="text-sm font-semibold text-slate-700">Week {week}</span>
+                    </div>
+                    <div className="ml-9 space-y-2">
+                      {byWeek[week].map((m) => (
+                        <div key={m.id} className="border border-slate-100 rounded-lg p-3.5 bg-slate-50/50">
+                          <p className="font-medium text-sm text-slate-800">{m.title}</p>
+                          {m.summary && <p className="text-xs text-slate-500 mt-0.5 leading-relaxed">{m.summary}</p>}
+                          <ReadingMaterial chunks={m.chunks ?? []} />
+                        </div>
+                      ))}
                     </div>
                   </div>
-                  <div className="flex gap-3 shrink-0">
-                    <button
-                      onClick={() => { setWpEditingId(plan.id); setShowWpForm(false); setWpForm({ week_number: plan.week_number, title: plan.title, description: plan.description }); setWpError('') }}
-                      className="text-xs text-slate-400 hover:text-slate-700 font-medium"
-                    >
-                      Edit
-                    </button>
-                    <button
-                      onClick={async () => {
-                        if (!window.confirm('Delete this week?')) return
-                        await adminDeleteWeeklyPlan(projectId, plan.id)
-                        await loadWeeklyPlans()
-                      }}
-                      className="text-xs text-red-400 hover:text-red-600"
-                    >
-                      Delete
-                    </button>
-                  </div>
-                </li>
-              ))}
-            </ol>
+                ))
+              })()}
+            </div>
           )}
         </div>
       )}
 
       {/* ── LEARNERS ─────────────────────────────────────────── */}
       {tab === 'learners' && (
-        <div className="bg-white rounded-xl border border-slate-100 shadow-sm p-6">
-          <h2 className="text-base font-semibold text-slate-900 mb-4">Assigned Learners</h2>
+        <div className="bg-white rounded-xl border border-slate-100 shadow-sm p-6 space-y-6">
 
-          {project.learners?.length === 0 ? (
-            <EmptyState
-              icon={<svg className="w-6 h-6 text-slate-300" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="1.5"><path strokeLinecap="round" strokeLinejoin="round" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z" /></svg>}
-              title="No learners assigned"
-              description="Assign learners by their user ID. They'll be able to access this project's content."
-            />
-          ) : (
-            <ul className="divide-y divide-slate-50 mb-5">
-              {project.learners?.map((l) => (
-                <li key={l.id} className="py-3 flex items-center justify-between">
-                  <div className="flex items-center gap-3">
-                    <div className="w-7 h-7 rounded-full bg-indigo-100 flex items-center justify-center text-xs font-bold text-indigo-600">
+          {/* Assigned learners */}
+          <div>
+            <h2 className="text-base font-semibold text-slate-900 mb-3">
+              Assigned Learners
+              {project.learners?.length > 0 && (
+                <span className="ml-2 text-xs font-normal text-slate-400">{project.learners.length}</span>
+              )}
+            </h2>
+            {project.learners?.length === 0 ? (
+              <p className="text-sm text-slate-400 py-3">No learners assigned yet.</p>
+            ) : (
+              <ul className="divide-y divide-slate-50">
+                {project.learners?.map((l) => (
+                  <li key={l.id} className="py-3 flex items-center justify-between">
+                    <div className="flex items-center gap-3">
+                      <div className="w-7 h-7 rounded-full bg-indigo-100 flex items-center justify-center text-xs font-bold text-indigo-600">
+                        {l.email?.[0]?.toUpperCase() ?? '?'}
+                      </div>
+                      <span className="text-sm text-slate-700">{l.email}</span>
+                    </div>
+                    <button
+                      onClick={() => removeLearner(projectId, l.id).then(() => { load(); loadAvailableLearners() })}
+                      className="text-xs text-red-400 hover:text-red-600 font-medium"
+                    >
+                      Remove
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+
+          {/* Available learners */}
+          <div className="pt-4 border-t border-slate-100">
+            <div className="flex items-center justify-between mb-3 gap-2 flex-wrap">
+              <h3 className="text-sm font-semibold text-slate-700">
+                Add Learners
+                {availableLearners.length > 0 && (
+                  <span className="ml-2 text-xs font-normal text-slate-400">{availableLearners.length} available</span>
+                )}
+              </h3>
+              {availableLearners.length > 0 && (
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => setSelectedLearnerIds(
+                      selectedLearnerIds.size === availableLearners.length
+                        ? new Set()
+                        : new Set(availableLearners.map((l) => l.id))
+                    )}
+                    className="text-xs text-indigo-600 hover:underline font-medium"
+                  >
+                    {selectedLearnerIds.size === availableLearners.length ? 'Deselect All' : 'Select All'}
+                  </button>
+                  {selectedLearnerIds.size > 0 && (
+                    <button
+                      onClick={() => handleBulkAssign(selectedLearnerIds)}
+                      disabled={bulkAssigning}
+                      className="text-xs bg-indigo-600 text-white px-3 py-1.5 rounded-lg hover:bg-indigo-700 font-medium disabled:opacity-50"
+                    >
+                      {bulkAssigning ? 'Assigning…' : `Assign Selected (${selectedLearnerIds.size})`}
+                    </button>
+                  )}
+                </div>
+              )}
+            </div>
+
+            {availableLoading ? (
+              <div className="space-y-2 animate-pulse">{[1,2,3].map(i => <div key={i} className="h-10 bg-slate-100 rounded-lg" />)}</div>
+            ) : availableLearners.length === 0 ? (
+              <p className="text-sm text-slate-400 py-3">
+                {project.learners?.length > 0
+                  ? 'All registered learners are already assigned.'
+                  : 'No learner accounts registered yet.'}
+              </p>
+            ) : (
+              <ul className="divide-y divide-slate-50">
+                {availableLearners.map((l) => (
+                  <li key={l.id} className="py-2.5 flex items-center gap-3">
+                    <input
+                      type="checkbox"
+                      checked={selectedLearnerIds.has(l.id)}
+                      onChange={(e) => {
+                        const next = new Set(selectedLearnerIds)
+                        e.target.checked ? next.add(l.id) : next.delete(l.id)
+                        setSelectedLearnerIds(next)
+                      }}
+                      className="accent-indigo-600 w-4 h-4 rounded"
+                    />
+                    <div className="w-7 h-7 rounded-full bg-slate-100 flex items-center justify-center text-xs font-bold text-slate-500">
                       {l.email?.[0]?.toUpperCase() ?? '?'}
                     </div>
-                    <span className="text-sm text-slate-700">{l.email}</span>
-                  </div>
-                  <button onClick={() => removeLearner(projectId, l.id).then(load)} className="text-xs text-red-400 hover:text-red-600 font-medium">
-                    Remove
-                  </button>
-                </li>
-              ))}
-            </ul>
-          )}
+                    <span className="text-sm text-slate-700 flex-1">{l.email}</span>
+                    <button
+                      onClick={() => handleBulkAssign(new Set([l.id]))}
+                      disabled={bulkAssigning}
+                      className="text-xs text-indigo-600 hover:underline font-medium disabled:opacity-50"
+                    >
+                      Assign
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
 
-          <form onSubmit={handleAssign} className="flex gap-2 mt-2">
-            <input
-              placeholder="Learner user ID or email"
-              value={learnerEmail}
-              onChange={(e) => setLearnerEmail(e.target.value)}
-              required
-              className="flex-1 border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400"
-            />
-            <button type="submit" className="bg-indigo-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-indigo-700">
-              Assign
-            </button>
-          </form>
-          {error && <p className="text-red-500 text-sm mt-2">{error}</p>}
+          {error && <p className="text-red-500 text-sm">{error}</p>}
 
-          <div className="mt-6 pt-4 border-t border-slate-100">
+          <div className="pt-4 border-t border-slate-100">
             <Link
               to={`/admin/projects/${projectId}/analytics`}
               className="inline-flex items-center gap-1.5 text-sm text-indigo-600 hover:text-indigo-700 font-medium"
