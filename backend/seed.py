@@ -9,7 +9,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 from app.core.config import settings
 from app.core.database import create_db_and_tables
-from app.core.security import get_password_hash
+from app.core.security import hash_password as get_password_hash
 from app.models.user import User
 from sqlmodel import Session, create_engine, select
 

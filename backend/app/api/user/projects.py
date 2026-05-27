@@ -1,9 +1,12 @@
 from fastapi import APIRouter, Depends, HTTPException
-from sqlmodel import Session, select
+from sqlmodel import Session, select, func
 from ...core.database import get_session
 from ...core.security import require_learner
 from ...models.project import Project
 from ...models.project_assignment import ProjectAssignment
+from ...models.learning_path import LearningPath
+from ...models.learning_module import LearningModule
+from ...models.module_completion import ModuleCompletion
 
 router = APIRouter(prefix="/projects", tags=["user-projects"])
 
@@ -30,15 +33,44 @@ async def list_assigned_projects(
     result = []
     for a in assignments:
         project = session.get(Project, a.project_id)
-        if project:
-            result.append({
-                "id": project.id,
-                "name": project.name,
-                "description": project.description,
-                "readiness_score": 0.0,
-                "modules_completed": 0,
-                "modules_total": 0,
-            })
+        if not project:
+            continue
+
+        # Get published learning path for this project
+        path = session.exec(
+            select(LearningPath).where(
+                LearningPath.project_id == project.id,
+                LearningPath.is_published == True,
+            )
+        ).first()
+
+        modules_total = 0
+        modules_completed = 0
+        if path:
+            modules_total = session.exec(
+                select(func.count()).where(LearningModule.learning_path_id == path.id)
+            ).one()
+            modules_completed = session.exec(
+                select(func.count()).where(
+                    ModuleCompletion.learner_id == learner.id,
+                    ModuleCompletion.module_id.in_(
+                        select(LearningModule.id).where(LearningModule.learning_path_id == path.id)
+                    ),
+                )
+            ).one()
+
+        completion_rate = round(modules_completed / modules_total * 100) if modules_total > 0 else 0
+
+        result.append({
+            "id": project.id,
+            "name": project.name,
+            "description": project.description,
+            "module_count": modules_total,
+            "modules_completed": modules_completed,
+            "modules_total": modules_total,
+            "completion_rate": completion_rate,
+            "has_published_path": path is not None,
+        })
     return result
 
 

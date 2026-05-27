@@ -28,16 +28,18 @@ async def _retrieve_chunks(
     session: Session,
     openai_client: AsyncOpenAI,
     embedding_model: str,
+    document_ids: list[str] | None = None,
 ) -> list[DocumentChunk]:
     from sqlalchemy import text
     emb_response = await openai_client.embeddings.create(
         input=[query], model=embedding_model, dimensions=1536
     )
     vec = emb_response.data[0].embedding
+    q = select(DocumentChunk).where(DocumentChunk.project_id == project_id)
+    if document_ids:
+        q = q.where(DocumentChunk.document_id.in_(document_ids))
     return session.exec(
-        select(DocumentChunk)
-        .where(DocumentChunk.project_id == project_id)
-        .order_by(text("embedding <=> CAST(:vec AS vector)").bindparams(vec=str(vec)))
+        q.order_by(text("embedding <=> CAST(:vec AS vector)").bindparams(vec=str(vec)))
         .limit(top_k)
     ).all()
 
@@ -76,22 +78,37 @@ async def generate_learning_path(
         f"[Chunk {i}]\n{c.content}" for i, c in enumerate(sample)
     )
 
-    min_modules = max(3, duration_weeks)
-    max_modules = max(4, duration_weeks * 2)
+    # Parse explicit module count from instruction (e.g. "6 modules")
+    import re as _re
+    explicit_modules = None
+    if custom_instruction:
+        m_match = _re.search(r'\b(\d+)\s+module', custom_instruction, _re.IGNORECASE)
+        if m_match:
+            explicit_modules = int(m_match.group(1))
+        # Also honour "X weeks" in the instruction as a belt-and-suspenders override
+        w_match = _re.search(r'\b(\d+)\s+week', custom_instruction, _re.IGNORECASE)
+        if w_match:
+            duration_weeks = int(w_match.group(1))
+
+    if explicit_modules:
+        module_constraint = f"You MUST create EXACTLY {explicit_modules} modules — no more, no fewer."
+    else:
+        min_modules = max(3, duration_weeks)
+        max_modules = max(4, duration_weeks * 2)
+        module_constraint = f"Create between {min_modules} and {max_modules} modules total."
 
     if custom_instruction.strip():
         style_hint = custom_instruction.strip()
     else:
         style_hint = "Balance breadth and depth, ordered from foundational to advanced."
 
-    style_hint += f" Create between {min_modules} and {max_modules} modules total, aiming for roughly 1-2 modules per week."
-
     system_prompt = (
         "You are an expert onboarding curriculum designer. "
-        "Given the numbered document chunks below, create a structured learning path spread across "
-        f"{duration_weeks} weeks. {style_hint} "
-        f"Distribute modules across weeks 1 to {duration_weeks}. "
+        f"Given the numbered document chunks below, create a structured learning path spread across EXACTLY {duration_weeks} weeks. "
+        f"{module_constraint} "
+        f"Distribute modules evenly across weeks 1 to {duration_weeks}. "
         "Multiple modules may share the same week. "
+        f"Additional instruction: {style_hint} "
         "For each module, list the indices of ALL chunks that belong to that topic in 'chunk_indices'. "
         "Every chunk must be assigned to at least one module — do not leave any chunk unassigned. "
         "Respond ONLY with valid JSON matching this schema exactly:\n"
@@ -323,6 +340,99 @@ async def generate_adaptive_questions(
         data = next(iter(data.values()))
 
     return [(item, difficulty) for item in data[:count]]
+
+
+async def path_designer_chat(
+    message: str,
+    history: list[dict],
+    path_context: dict,
+    project_name: str,
+    project_id: str,
+    duration_weeks: int,
+    openai_client: AsyncOpenAI,
+    chat_model: str,
+    embedding_model: str,
+    session,
+    document_ids: list[str] | None = None,
+) -> dict:
+    """Conversational path designer with RAG. Returns reply + optional regenerate action."""
+    import re
+
+    modules = path_context.get("modules", [])
+    if modules:
+        modules_summary = "\n".join(
+            f"  - Week {m.get('week_number', i + 1)}: {m.get('title', '')} — {(m.get('summary') or '')[:80]}"
+            for i, m in enumerate(modules)
+        )
+    else:
+        modules_summary = "  No learning path generated yet."
+
+    # RAG: retrieve chunks relevant to the user's message
+    rag_context = ""
+    try:
+        chunks = await _retrieve_chunks(message, project_id, 6, session, openai_client, embedding_model, document_ids or None)
+        if chunks:
+            rag_context = "\n\nRelevant source material from uploaded documents:\n" + "\n---\n".join(
+                f"[Chunk {i+1}]: {c.content[:300]}" for i, c in enumerate(chunks)
+            )
+    except Exception:
+        pass
+
+    system_prompt = (
+        f"You are Atlas, an expert AI learning path designer.\n\n"
+        f"Project: {project_name}\n"
+        f"Duration: {duration_weeks} weeks\n"
+        f"Current path ({len(modules)} modules):\n{modules_summary}\n"
+        f"{rag_context}\n\n"
+        "Your job is to help the admin refine the learning path through natural conversation.\n"
+        "- For questions about document content or what topics are covered: answer using the source material above.\n"
+        "- For questions about the path structure: answer using the current path summary.\n"
+        "- For any change request (duration, topics, difficulty, structure, content focus): "
+        "explain what you will do in 1-2 sentences, then append EXACTLY this JSON block at the end "
+        "(no text after it):\n"
+        '<action>{"type":"regenerate","instruction":"<full precise instruction including EXACT week count and EXACT module count if specified>","duration_weeks":<integer, required — use current duration if not changed>}</action>\n'
+        "IMPORTANT: always set duration_weeks to an integer (never null). "
+        "If the user specifies a module count, include it verbatim in the instruction field (e.g. 'Create exactly 6 modules for 3 weeks'). "
+        "Never include the action block for questions or commentary."
+    )
+
+    messages = [{"role": "system", "content": system_prompt}]
+    for h in (history or [])[-10:]:
+        role = h.get("role") or ("assistant" if h.get("from") == "ai" else "user")
+        messages.append({"role": role, "content": h.get("content") or h.get("text", "")})
+    messages.append({"role": "user", "content": message})
+
+    response = await openai_client.chat.completions.create(
+        model=chat_model,
+        messages=messages,
+        temperature=0.4,
+    )
+
+    full_reply = response.choices[0].message.content.strip()
+
+    action = None
+    instruction = None
+    duration_override = None
+    m = re.search(r"<action>(.*?)</action>", full_reply, re.DOTALL)
+    if m:
+        reply_text = full_reply[: m.start()].strip()
+        try:
+            action_data = json.loads(m.group(1))
+            action = action_data.get("type")
+            instruction = action_data.get("instruction", "")
+            raw_weeks = action_data.get("duration_weeks")
+            duration_override = int(raw_weeks) if raw_weeks and str(raw_weeks).isdigit() else None
+        except Exception:
+            pass
+    else:
+        reply_text = full_reply
+
+    return {
+        "reply": reply_text,
+        "action": action,
+        "instruction": instruction,
+        "duration_weeks": duration_override,
+    }
 
 
 async def orchestrate(

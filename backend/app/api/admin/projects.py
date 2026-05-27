@@ -70,7 +70,10 @@ async def list_projects(
         learner_count = session.exec(
             select(func.count()).where(ProjectAssignment.project_id == p.id)
         ).one()
-        result.append({**p.model_dump(), "learner_count": learner_count})
+        doc_count = session.exec(
+            select(func.count()).where(Document.project_id == p.id)
+        ).one()
+        result.append({**p.model_dump(), "learner_count": learner_count, "doc_count": doc_count})
     return result
 
 

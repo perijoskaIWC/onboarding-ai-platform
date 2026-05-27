@@ -38,5 +38,16 @@ services:
       - /app/node_modules
     command: npm run dev -- --host 0.0.0.0
 
+  frontend-v2:
+    build: ./frontend-v2
+    ports:
+      - "5174:5174"
+    depends_on:
+      - backend
+    volumes:
+      - ./frontend-v2:/app
+      - /app/node_modules
+    command: npm run dev -- --host 0.0.0.0
+
 volumes:
   postgres_data:

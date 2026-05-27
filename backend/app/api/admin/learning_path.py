@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, Request, Query
 from typing import Optional
+from pydantic import BaseModel
 from sqlmodel import Session, select
 
 from ...core.database import get_session, engine
@@ -10,7 +11,7 @@ from ...models.learning_path import LearningPath
 from ...models.learning_module import LearningModule
 from ...models.module_chunk import ModuleChunk
 from ...models.document_chunk import DocumentChunk
-from ...services.ai import generate_learning_path
+from ...services.ai import generate_learning_path, path_designer_chat
 
 router = APIRouter(tags=["admin-learning-path"])
 
@@ -53,13 +54,14 @@ async def trigger_learning_path(
     request: Request,
     background_tasks: BackgroundTasks,
     instruction: str = Query(default=""),
+    duration_weeks: Optional[int] = Query(default=None),
     admin=Depends(require_admin),
     session: Session = Depends(get_session),
 ):
     project = _get_project_or_404(project_id, admin.id, session)
     openai_client = request.app.state.openai_client
-    # Use instruction as path_name label (truncated) for DB identification
     path_name = (instruction[:40].strip() or "Standard")
+    weeks = duration_weeks if duration_weeks and 1 <= duration_weeks <= 52 else project.duration_weeks
 
     background_tasks.add_task(
         _run_generate,
@@ -69,10 +71,10 @@ async def trigger_learning_path(
         settings.azure_openai_chat_deployment,
         settings.azure_openai_embedding_deployment,
         path_name,
-        project.duration_weeks,
+        weeks,
         instruction,
     )
-    return {"detail": "Learning path generation started", "path_name": path_name}
+    return {"detail": "Learning path generation started", "path_name": path_name, "duration_weeks": weeks}
 
 
 @router.get("/admin/projects/{project_id}/learning-path")
@@ -132,6 +134,58 @@ async def publish_learning_path(
     session.commit()
     session.refresh(path)
     return {"id": path.id, "is_published": path.is_published, "path_name": path.path_name}
+
+
+class PathChatRequest(BaseModel):
+    message: str
+    history: list[dict] = []
+    document_ids: list[str] = []
+
+
+@router.post("/admin/projects/{project_id}/path-chat")
+async def path_chat(
+    project_id: str,
+    body: PathChatRequest,
+    request: Request,
+    admin=Depends(require_admin),
+    session: Session = Depends(get_session),
+):
+    project = _get_project_or_404(project_id, admin.id, session)
+
+    path = session.exec(
+        select(LearningPath)
+        .where(LearningPath.project_id == project_id)
+        .order_by(LearningPath.generated_at.desc())
+    ).first()
+
+    path_context: dict = {}
+    if path:
+        modules = session.exec(
+            select(LearningModule)
+            .where(LearningModule.learning_path_id == path.id)
+            .order_by(LearningModule.week_number, LearningModule.order_index)
+        ).all()
+        path_context = {
+            "modules": [
+                {"title": m.title, "summary": m.summary, "week_number": m.week_number}
+                for m in modules
+            ]
+        }
+
+    result = await path_designer_chat(
+        message=body.message,
+        history=body.history,
+        path_context=path_context,
+        project_name=project.name,
+        project_id=project_id,
+        duration_weeks=project.duration_weeks,
+        openai_client=request.app.state.openai_client,
+        chat_model=settings.azure_openai_chat_deployment,
+        embedding_model=settings.azure_openai_embedding_deployment,
+        session=session,
+        document_ids=body.document_ids,
+    )
+    return result
 
 
 @router.get("/admin/projects/{project_id}/learning-path/names")
