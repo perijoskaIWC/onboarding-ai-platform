@@ -8,8 +8,38 @@ from ..models.learning_path import LearningPath
 from ..models.learning_module import LearningModule
 
 
+SEED_QUERIES = [
+    "introduction and overview of key concepts",
+    "procedures workflows and step-by-step processes",
+    "rules requirements and compliance",
+    "roles responsibilities and team structure",
+    "practical application and examples",
+]
+
+
 def get_openai_client(request: Request) -> AsyncOpenAI:
     return request.app.state.openai_client
+
+
+async def _retrieve_chunks(
+    query: str,
+    project_id: str,
+    top_k: int,
+    session: Session,
+    openai_client: AsyncOpenAI,
+    embedding_model: str,
+) -> list[DocumentChunk]:
+    from sqlalchemy import text
+    emb_response = await openai_client.embeddings.create(
+        input=[query], model=embedding_model, dimensions=1536
+    )
+    vec = emb_response.data[0].embedding
+    return session.exec(
+        select(DocumentChunk)
+        .where(DocumentChunk.project_id == project_id)
+        .order_by(text("embedding <=> CAST(:vec AS vector)").bindparams(vec=str(vec)))
+        .limit(top_k)
+    ).all()
 
 
 async def generate_learning_path(
@@ -18,31 +48,34 @@ async def generate_learning_path(
     session: Session,
     openai_client: AsyncOpenAI,
     chat_model: str,
+    embedding_model: str,
     path_name: str = "Standard",
     duration_weeks: int = 4,
     custom_instruction: str = "",
 ) -> LearningPath:
     from ..models.module_chunk import ModuleChunk
 
-    chunks = session.exec(
-        select(DocumentChunk)
-        .where(DocumentChunk.project_id == project_id)
-        .order_by(DocumentChunk.document_id, DocumentChunk.chunk_index)
-    ).all()
+    # RAG retrieval: instruction query for focused coverage, or multi-seed for broad coverage
+    if custom_instruction.strip():
+        sample = list(await _retrieve_chunks(custom_instruction, project_id, 40, session, openai_client, embedding_model))
+    else:
+        seen_ids: set = set()
+        sample = []
+        for q in SEED_QUERIES:
+            for c in await _retrieve_chunks(q, project_id, 8, session, openai_client, embedding_model):
+                if c.id not in seen_ids:
+                    seen_ids.add(c.id)
+                    sample.append(c)
 
-    if not chunks:
+    if not sample:
         raise ValueError("No document chunks available for this project")
 
-    import random
-    sample = random.sample(chunks, min(120, len(chunks)))
     sample.sort(key=lambda c: (c.document_id, c.chunk_index))
 
-    # Number chunks so the AI can reference them by index
     numbered_corpus = "\n\n---\n\n".join(
         f"[Chunk {i}]\n{c.content}" for i, c in enumerate(sample)
     )
 
-    # Scale module count to duration: ~2 modules per week, min 3
     min_modules = max(3, duration_weeks)
     max_modules = max(4, duration_weeks * 2)
 
@@ -101,7 +134,7 @@ async def generate_learning_path(
             week_number=max(1, min(int(mod.get("week_number", 1)), duration_weeks)),
         )
         session.add(lm)
-        session.flush()  # need lm.id before linking chunks
+        session.flush()
 
         for order, ci in enumerate(mod.get("chunk_indices", [])):
             if isinstance(ci, int) and 0 <= ci < len(sample):
@@ -126,22 +159,7 @@ async def rag_chat(
     embedding_model: str,
     chat_model: str,
 ) -> dict:
-    emb_response = await openai_client.embeddings.create(
-        input=[question], model=embedding_model, dimensions=1536
-    )
-    question_embedding = emb_response.data[0].embedding
-
-    from sqlalchemy import text
-    chunks = session.exec(
-        select(DocumentChunk)
-        .where(DocumentChunk.project_id == project_id)
-        .order_by(
-            text("embedding <=> CAST(:vec AS vector)").bindparams(
-                vec=str(question_embedding)
-            )
-        )
-        .limit(top_k)
-    ).all()
+    chunks = await _retrieve_chunks(question, project_id, top_k, session, openai_client, embedding_model)
 
     if not chunks:
         return {
@@ -183,19 +201,33 @@ async def generate_questions(
     session: Session,
     openai_client: AsyncOpenAI,
     chat_model: str,
+    embedding_model: str,
+    modules=None,
 ) -> list[dict]:
-    chunks = session.exec(
-        select(DocumentChunk)
-        .where(DocumentChunk.project_id == project_id)
-        .order_by(DocumentChunk.document_id, DocumentChunk.chunk_index)
-    ).all()
+    # RAG retrieval: module-aware if LP exists, otherwise broad seed queries
+    if modules:
+        seen_ids: set = set()
+        chunks_list = []
+        per_module = max(3, quiz_length // len(modules))
+        for mod in modules:
+            query = f"{mod.title} {mod.key_concepts}".strip()
+            for c in await _retrieve_chunks(query, project_id, per_module, session, openai_client, embedding_model):
+                if c.id not in seen_ids:
+                    seen_ids.add(c.id)
+                    chunks_list.append(c)
+    else:
+        seen_ids = set()
+        chunks_list = []
+        for q in SEED_QUERIES:
+            for c in await _retrieve_chunks(q, project_id, quiz_length, session, openai_client, embedding_model):
+                if c.id not in seen_ids:
+                    seen_ids.add(c.id)
+                    chunks_list.append(c)
 
-    if not chunks:
+    if not chunks_list:
         raise ValueError("No document chunks available for this project")
 
-    import random
-    sample = random.sample(chunks, min(quiz_length * 3, len(chunks)))
-    corpus = "\n\n---\n\n".join(c.content for c in sample)
+    corpus = "\n\n---\n\n".join(c.content for c in chunks_list)
 
     system_prompt = (
         f"You are a quiz designer. Generate exactly {quiz_length} multiple-choice questions from the learning material. "
@@ -228,20 +260,31 @@ async def generate_adaptive_questions(
     session: Session,
     openai_client: AsyncOpenAI,
     chat_model: str,
+    embedding_model: str,
     count: int = 3,
 ) -> list[dict]:
-    chunks = session.exec(
-        select(DocumentChunk)
-        .where(DocumentChunk.project_id == project_id)
-        .order_by(DocumentChunk.document_id, DocumentChunk.chunk_index)
-    ).all()
+    # RAG retrieval: retrieve chunks relevant to wrong topics, or broad seed if no wrong topics
+    if wrong_topics:
+        seen_ids: set = set()
+        chunks_list = []
+        for topic in wrong_topics[:3]:
+            for c in await _retrieve_chunks(topic, project_id, 5, session, openai_client, embedding_model):
+                if c.id not in seen_ids:
+                    seen_ids.add(c.id)
+                    chunks_list.append(c)
+    else:
+        seen_ids = set()
+        chunks_list = []
+        for q in SEED_QUERIES[:3]:
+            for c in await _retrieve_chunks(q, project_id, count * 2, session, openai_client, embedding_model):
+                if c.id not in seen_ids:
+                    seen_ids.add(c.id)
+                    chunks_list.append(c)
 
-    if not chunks:
+    if not chunks_list:
         return []
 
-    import random as _random
-    sample = _random.sample(chunks, min(count * 4, len(chunks)))
-    corpus = "\n\n---\n\n".join(c.content for c in sample)
+    corpus = "\n\n---\n\n".join(c.content for c in chunks_list)
 
     if score >= 0.8:
         difficulty = "harder"
@@ -295,7 +338,6 @@ async def orchestrate(
 ) -> dict:
     """Route message to the appropriate specialist agent and return a combined response."""
 
-    # Step 1: Route — classify intent
     route_response = await openai_client.chat.completions.create(
         model=chat_model,
         messages=[
@@ -318,7 +360,6 @@ async def orchestrate(
     if intent not in ("tutor", "quiz_advisor", "path_advisor"):
         intent = "tutor"
 
-    # Step 2: Dispatch to specialist agent
     if intent == "tutor":
         result = await rag_chat(
             question=message,

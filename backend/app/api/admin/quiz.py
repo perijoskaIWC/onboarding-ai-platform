@@ -27,10 +27,10 @@ def _get_question_or_404(project_id: str, question_id: str, session: Session) ->
     return q
 
 
-async def _run_generate(project_id: str, quiz_length: int, openai_client, chat_model: str):
+async def _run_generate(project_id: str, quiz_length: int, openai_client, chat_model: str, embedding_model: str):
     try:
         with Session(engine) as session:
-            items = await generate_questions(project_id, quiz_length, session, openai_client, chat_model)
+            items = await generate_questions(project_id, quiz_length, session, openai_client, chat_model, embedding_model)
             old = session.exec(select(Question).where(Question.project_id == project_id)).all()
             for q in old:
                 session.delete(q)
@@ -96,6 +96,7 @@ async def generate_project_questions(
         project.quiz_length,
         request.app.state.openai_client,
         settings.azure_openai_chat_deployment,
+        settings.azure_openai_embedding_deployment,
     )
     return {"detail": "Question generation started"}
 

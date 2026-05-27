@@ -33,10 +33,10 @@ def _check_assigned(project_id: str, learner_id: str, session: Session):
         raise HTTPException(status_code=403, detail="Not assigned to this project")
 
 
-async def _run_adaptive(project_id: str, learner_id: str, score: float, wrong_topics: list[str], openai_client, chat_model: str):
+async def _run_adaptive(project_id: str, learner_id: str, score: float, wrong_topics: list[str], openai_client, chat_model: str, embedding_model: str):
     try:
         with Session(engine) as session:
-            items = await generate_adaptive_questions(project_id, score, wrong_topics, session, openai_client, chat_model)
+            items = await generate_adaptive_questions(project_id, score, wrong_topics, session, openai_client, chat_model, embedding_model)
             old = session.exec(
                 select(AdaptiveQuestion).where(
                     AdaptiveQuestion.project_id == project_id,
@@ -154,6 +154,7 @@ async def submit_quiz(
         wrong_topics,
         request.app.state.openai_client,
         settings.azure_openai_chat_deployment,
+        settings.azure_openai_embedding_deployment,
     )
 
     return {"score": score, "correct": correct, "total": total, "results": results, "adaptive_ready": False}

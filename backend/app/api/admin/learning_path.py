@@ -38,10 +38,10 @@ def _get_project_or_404(project_id: str, admin_id: str, session: Session) -> Pro
     return project
 
 
-async def _run_generate(project_id: str, learner_id: str, openai_client, chat_model: str, path_name: str, duration_weeks: int, custom_instruction: str = ""):
+async def _run_generate(project_id: str, learner_id: str, openai_client, chat_model: str, embedding_model: str, path_name: str, duration_weeks: int, custom_instruction: str = ""):
     try:
         with Session(engine) as session:
-            await generate_learning_path(project_id, learner_id, session, openai_client, chat_model, path_name, duration_weeks, custom_instruction)
+            await generate_learning_path(project_id, learner_id, session, openai_client, chat_model, embedding_model, path_name, duration_weeks, custom_instruction)
     except Exception as e:
         import logging
         logging.getLogger(__name__).error("Learning path generation failed: %s", e, exc_info=True)
@@ -67,6 +67,7 @@ async def trigger_learning_path(
         admin.id,
         openai_client,
         settings.azure_openai_chat_deployment,
+        settings.azure_openai_embedding_deployment,
         path_name,
         project.duration_weeks,
         instruction,
