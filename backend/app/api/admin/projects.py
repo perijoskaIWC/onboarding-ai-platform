@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 from typing import Annotated, Optional
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlmodel import Session, select, func
 from pydantic import BaseModel
 from ...core.database import get_session
@@ -31,6 +31,7 @@ class ProjectCreate(BaseModel):
     chunk_overlap: int = 50
     rag_top_k: int = 5
     quiz_length: int = 10
+    quiz_attempt_size: Optional[int] = None
     duration_weeks: int = 4
 
 
@@ -41,15 +42,18 @@ class ProjectUpdate(BaseModel):
     chunk_overlap: Optional[int] = None
     rag_top_k: Optional[int] = None
     quiz_length: Optional[int] = None
+    quiz_attempt_size: Optional[int] = None
     duration_weeks: Optional[int] = None
 
 
 class AssignLearnerRequest(BaseModel):
     learner_id: str
+    learning_path_id: Optional[str] = None
 
 
 class BulkAssignRequest(BaseModel):
     learner_ids: list[str]
+    learning_path_id: Optional[str] = None
 
 
 def _get_project_or_404(project_id: str, admin_id: str, session: Session) -> Project:
@@ -100,12 +104,15 @@ async def get_project(
     assignments = session.exec(
         select(ProjectAssignment).where(ProjectAssignment.project_id == project_id)
     ).all()
-    learners = []
+    learner_map: dict = {}
     for a in assignments:
         user = session.get(User, a.learner_id)
         if user:
-            learners.append({"id": user.id, "email": user.email})
-    return {**project.model_dump(), "learners": learners}
+            if user.id not in learner_map:
+                learner_map[user.id] = {"id": user.id, "email": user.email, "path_ids": []}
+            if a.learning_path_id:
+                learner_map[user.id]["path_ids"].append(a.learning_path_id)
+    return {**project.model_dump(), "learners": list(learner_map.values())}
 
 
 @router.patch("/{project_id}")
@@ -166,15 +173,22 @@ async def assign_learner(
     learner = session.get(User, body.learner_id)
     if not learner or learner.role != "learner":
         raise HTTPException(status_code=404, detail="Learner not found")
-    existing = session.exec(
-        select(ProjectAssignment).where(
-            ProjectAssignment.project_id == project_id,
-            ProjectAssignment.learner_id == body.learner_id,
-        )
-    ).first()
-    if existing:
-        raise HTTPException(status_code=409, detail="Already assigned")
-    assignment = ProjectAssignment(project_id=project_id, learner_id=body.learner_id)
+    # Check for duplicate with same path (or no path)
+    q = select(ProjectAssignment).where(
+        ProjectAssignment.project_id == project_id,
+        ProjectAssignment.learner_id == body.learner_id,
+    )
+    if body.learning_path_id:
+        q = q.where(ProjectAssignment.learning_path_id == body.learning_path_id)
+    else:
+        q = q.where(ProjectAssignment.learning_path_id == None)  # noqa: E711
+    if session.exec(q).first():
+        raise HTTPException(status_code=409, detail="Already assigned to this path")
+    assignment = ProjectAssignment(
+        project_id=project_id,
+        learner_id=body.learner_id,
+        learning_path_id=body.learning_path_id,
+    )
     session.add(assignment)
     session.commit()
     session.refresh(assignment)
@@ -184,15 +198,28 @@ async def assign_learner(
 @router.get("/{project_id}/learners/available")
 async def get_available_learners(
     project_id: str,
+    path_id: Optional[str] = Query(default=None),
     admin=Depends(require_admin),
     session: Session = Depends(get_session),
 ):
     _get_project_or_404(project_id, admin.id, session)
-    assigned_ids = set(
-        session.exec(
-            select(ProjectAssignment.learner_id).where(ProjectAssignment.project_id == project_id)
-        ).all()
-    )
+    if path_id:
+        # Exclude only learners already assigned to this specific path
+        assigned_ids = set(
+            session.exec(
+                select(ProjectAssignment.learner_id).where(
+                    ProjectAssignment.project_id == project_id,
+                    ProjectAssignment.learning_path_id == path_id,
+                )
+            ).all()
+        )
+    else:
+        # Fallback: exclude learners with any assignment to this project
+        assigned_ids = set(
+            session.exec(
+                select(ProjectAssignment.learner_id).where(ProjectAssignment.project_id == project_id)
+            ).all()
+        )
     all_learners = session.exec(select(User).where(User.role == "learner")).all()
     return [{"id": u.id, "email": u.email} for u in all_learners if u.id not in assigned_ids]
 
@@ -214,10 +241,15 @@ async def bulk_assign_learners(
             select(ProjectAssignment).where(
                 ProjectAssignment.project_id == project_id,
                 ProjectAssignment.learner_id == lid,
+                ProjectAssignment.learning_path_id == body.learning_path_id,
             )
         ).first()
         if not existing:
-            session.add(ProjectAssignment(project_id=project_id, learner_id=lid))
+            session.add(ProjectAssignment(
+                project_id=project_id,
+                learner_id=lid,
+                learning_path_id=body.learning_path_id,
+            ))
             added += 1
     session.commit()
     return {"added": added}
@@ -227,16 +259,18 @@ async def bulk_assign_learners(
 async def remove_learner(
     project_id: str,
     learner_id: str,
+    path_id: Optional[str] = Query(default=None),
     admin=Depends(require_admin),
     session: Session = Depends(get_session),
 ):
     _get_project_or_404(project_id, admin.id, session)
-    assignment = session.exec(
-        select(ProjectAssignment).where(
-            ProjectAssignment.project_id == project_id,
-            ProjectAssignment.learner_id == learner_id,
-        )
-    ).first()
-    if assignment:
-        session.delete(assignment)
-        session.commit()
+    q = select(ProjectAssignment).where(
+        ProjectAssignment.project_id == project_id,
+        ProjectAssignment.learner_id == learner_id,
+    )
+    if path_id:
+        q = q.where(ProjectAssignment.learning_path_id == path_id)
+    assignments = session.exec(q).all()
+    for a in assignments:
+        session.delete(a)
+    session.commit()

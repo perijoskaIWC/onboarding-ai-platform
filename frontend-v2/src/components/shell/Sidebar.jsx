@@ -7,12 +7,10 @@ const NAV_ADMIN = [
   { group: 'Workspace', items: [
     { id: 'admin-dashboard', label: 'Dashboard', icon: 'grid', path: '/v2/admin' },
     { id: 'admin-projects', label: 'Projects', icon: 'folder', path: '/v2/admin/projects' },
-    { id: 'admin-documents', label: 'Documents', icon: 'docs', path: '/v2/admin/documents' },
   ]},
   { group: 'Learning', items: [
     { id: 'admin-paths', label: 'Learning Paths', icon: 'layers', path: '/v2/admin/projects' },
     { id: 'admin-assign', label: 'Assignments', icon: 'users', path: '/v2/admin/projects' },
-    { id: 'admin-quizzes', label: 'Quizzes', icon: 'check', path: '/v2/admin/quizzes' },
     { id: 'admin-ai-config', label: 'AI Tutor Config', icon: 'sparkle', path: '/v2/admin/ai-config' },
   ]},
   { group: 'Insights', items: [

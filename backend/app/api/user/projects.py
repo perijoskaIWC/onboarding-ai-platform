@@ -30,8 +30,12 @@ async def list_assigned_projects(
     assignments = session.exec(
         select(ProjectAssignment).where(ProjectAssignment.learner_id == learner.id)
     ).all()
+    seen_project_ids = set()
     result = []
     for a in assignments:
+        if a.project_id in seen_project_ids:
+            continue
+        seen_project_ids.add(a.project_id)
         project = session.get(Project, a.project_id)
         if not project:
             continue

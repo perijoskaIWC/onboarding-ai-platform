@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, Request, Query
 from typing import Optional
 from pydantic import BaseModel
-from sqlmodel import Session, select
+from sqlmodel import Session, select, func
 
 from ...core.database import get_session, engine
 from ...core.security import require_admin
@@ -11,7 +11,9 @@ from ...models.learning_path import LearningPath
 from ...models.learning_module import LearningModule
 from ...models.module_chunk import ModuleChunk
 from ...models.document_chunk import DocumentChunk
-from ...services.ai import generate_learning_path, path_designer_chat
+from ...models.question import Question
+from ...models.project_assignment import ProjectAssignment
+from ...services.ai import generate_learning_path, path_designer_chat, generate_questions_for_path
 
 router = APIRouter(tags=["admin-learning-path"])
 
@@ -39,13 +41,54 @@ def _get_project_or_404(project_id: str, admin_id: str, session: Session) -> Pro
     return project
 
 
-async def _run_generate(project_id: str, learner_id: str, openai_client, chat_model: str, embedding_model: str, path_name: str, duration_weeks: int, custom_instruction: str = ""):
+async def _run_generate(project_id: str, learner_id: str, openai_client, chat_model: str, embedding_model: str, path_name: str, duration_weeks: int, custom_instruction: str = "", document_ids: list[str] | None = None):
     try:
         with Session(engine) as session:
-            await generate_learning_path(project_id, learner_id, session, openai_client, chat_model, embedding_model, path_name, duration_weeks, custom_instruction)
+            path = await generate_learning_path(project_id, learner_id, session, openai_client, chat_model, embedding_model, path_name, duration_weeks, custom_instruction, document_ids)
+
+            project = session.get(Project, project_id)
+            quiz_length = project.quiz_length if project else 10
+
+            # Remove any previous questions for this path (handles re-generation)
+            old_qs = session.exec(select(Question).where(Question.learning_path_id == path.id)).all()
+            for q in old_qs:
+                session.delete(q)
+            session.flush()
+
+            items = await generate_questions_for_path(
+                path_id=path.id,
+                project_id=project_id,
+                quiz_length=quiz_length,
+                session=session,
+                openai_client=openai_client,
+                chat_model=chat_model,
+                embedding_model=embedding_model,
+            )
+
+            for item, module_id, path_id_ref in items:
+                options = item.get("options", ["", "", "", ""])
+                session.add(Question(
+                    project_id=project_id,
+                    module_id=module_id,
+                    learning_path_id=path_id_ref,
+                    question_text=item.get("question", ""),
+                    option_a=options[0] if len(options) > 0 else "",
+                    option_b=options[1] if len(options) > 1 else "",
+                    option_c=options[2] if len(options) > 2 else "",
+                    option_d=options[3] if len(options) > 3 else "",
+                    correct_answer=item.get("answer", "A"),
+                    explanation=item.get("explanation"),
+                    is_published=False,
+                ))
+            session.commit()
+
     except Exception as e:
         import logging
         logging.getLogger(__name__).error("Learning path generation failed: %s", e, exc_info=True)
+
+
+class GeneratePathBody(BaseModel):
+    document_ids: list[str] = []
 
 
 @router.post("/admin/projects/{project_id}/learning-path", status_code=202)
@@ -53,6 +96,8 @@ async def trigger_learning_path(
     project_id: str,
     request: Request,
     background_tasks: BackgroundTasks,
+    body: GeneratePathBody = GeneratePathBody(),
+    path_name: str = Query(default=""),
     instruction: str = Query(default=""),
     duration_weeks: Optional[int] = Query(default=None),
     admin=Depends(require_admin),
@@ -60,8 +105,10 @@ async def trigger_learning_path(
 ):
     project = _get_project_or_404(project_id, admin.id, session)
     openai_client = request.app.state.openai_client
-    path_name = (instruction[:40].strip() or "Standard")
+    # Use explicit path_name if provided, else fall back to instruction excerpt
+    name = path_name.strip() or instruction[:40].strip() or "Standard"
     weeks = duration_weeks if duration_weeks and 1 <= duration_weeks <= 52 else project.duration_weeks
+    doc_ids = body.document_ids if body.document_ids else None
 
     background_tasks.add_task(
         _run_generate,
@@ -70,26 +117,82 @@ async def trigger_learning_path(
         openai_client,
         settings.azure_openai_chat_deployment,
         settings.azure_openai_embedding_deployment,
-        path_name,
+        name,
         weeks,
         instruction,
+        doc_ids,
     )
-    return {"detail": "Learning path generation started", "path_name": path_name, "duration_weeks": weeks}
+    return {"detail": "Learning path generation started", "path_name": name, "duration_weeks": weeks}
+
+
+# Must be registered before /{path_id} routes
+@router.get("/admin/projects/{project_id}/learning-paths")
+async def list_learning_paths(
+    project_id: str,
+    admin=Depends(require_admin),
+    session: Session = Depends(get_session),
+):
+    """List all learning paths for a project with summary stats."""
+    _get_project_or_404(project_id, admin.id, session)
+    paths = session.exec(
+        select(LearningPath)
+        .where(LearningPath.project_id == project_id)
+        .order_by(LearningPath.generated_at.desc())
+    ).all()
+
+    result = []
+    seen_names: dict[str, bool] = {}
+    for p in paths:
+        # Only return the latest version per path_name
+        if p.path_name in seen_names:
+            continue
+        seen_names[p.path_name] = True
+
+        module_count = session.exec(
+            select(func.count()).where(LearningModule.learning_path_id == p.id)
+        ).one()
+        question_count = session.exec(
+            select(func.count()).where(Question.learning_path_id == p.id)
+        ).one()
+        published_q_count = session.exec(
+            select(func.count()).where(
+                Question.learning_path_id == p.id,
+                Question.is_published == True,
+            )
+        ).one()
+        learner_count = session.exec(
+            select(func.count()).where(ProjectAssignment.learning_path_id == p.id)
+        ).one()
+
+        result.append({
+            **p.model_dump(),
+            "module_count": module_count,
+            "question_count": question_count,
+            "published_question_count": published_q_count,
+            "assigned_learner_count": learner_count,
+        })
+    return result
 
 
 @router.get("/admin/projects/{project_id}/learning-path")
 async def get_learning_path(
     project_id: str,
     path_name: Optional[str] = Query(default=None),
+    path_id: Optional[str] = Query(default=None),
     admin=Depends(require_admin),
     session: Session = Depends(get_session),
 ):
     _get_project_or_404(project_id, admin.id, session)
 
-    query = select(LearningPath).where(LearningPath.project_id == project_id)
-    if path_name:
-        query = query.where(LearningPath.path_name == path_name)
-    path = session.exec(query.order_by(LearningPath.generated_at.desc())).first()
+    if path_id:
+        path = session.get(LearningPath, path_id)
+        if not path or path.project_id != project_id:
+            raise HTTPException(status_code=404, detail="Learning path not found")
+    else:
+        query = select(LearningPath).where(LearningPath.project_id == project_id)
+        if path_name:
+            query = query.where(LearningPath.path_name == path_name)
+        path = session.exec(query.order_by(LearningPath.generated_at.desc())).first()
 
     if not path:
         raise HTTPException(status_code=404, detail="No learning path generated yet")
@@ -118,19 +221,14 @@ async def publish_learning_path(
     if not path or path.project_id != project_id:
         raise HTTPException(status_code=404, detail="Learning path not found")
 
-    # Unpublish any previously published paths for this project+path_name
-    existing = session.exec(
-        select(LearningPath).where(
-            LearningPath.project_id == project_id,
-            LearningPath.is_published == True,
-        )
-    ).all()
-    for p in existing:
-        p.is_published = False
-        session.add(p)
-
-    path.is_published = True
+    # Toggle: publish/unpublish path and all its questions together
+    new_state = not path.is_published
+    path.is_published = new_state
     session.add(path)
+    for q in session.exec(select(Question).where(Question.learning_path_id == path_id)).all():
+        q.is_published = new_state
+        session.add(q)
+
     session.commit()
     session.refresh(path)
     return {"id": path.id, "is_published": path.is_published, "path_name": path.path_name}
@@ -140,6 +238,7 @@ class PathChatRequest(BaseModel):
     message: str
     history: list[dict] = []
     document_ids: list[str] = []
+    path_name: Optional[str] = None
 
 
 @router.post("/admin/projects/{project_id}/path-chat")
@@ -152,11 +251,10 @@ async def path_chat(
 ):
     project = _get_project_or_404(project_id, admin.id, session)
 
-    path = session.exec(
-        select(LearningPath)
-        .where(LearningPath.project_id == project_id)
-        .order_by(LearningPath.generated_at.desc())
-    ).first()
+    query = select(LearningPath).where(LearningPath.project_id == project_id)
+    if body.path_name:
+        query = query.where(LearningPath.path_name == body.path_name)
+    path = session.exec(query.order_by(LearningPath.generated_at.desc())).first()
 
     path_context: dict = {}
     if path:

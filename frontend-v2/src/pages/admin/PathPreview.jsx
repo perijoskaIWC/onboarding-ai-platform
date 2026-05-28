@@ -6,6 +6,107 @@ import Icon from '../../icons'
 import { getProject } from '../../services/projects'
 import { getAdminLearningPath, publishLearningPath } from '../../services/learningPath'
 
+function ModuleCard({ m, index, week }) {
+  const [expanded, setExpanded] = useState(false)
+  const concepts = m.key_concepts
+    ? m.key_concepts.split(',').map(s => s.trim()).filter(Boolean)
+    : []
+  const chunks = m.chunks ?? []
+
+  return (
+    <div className="card" style={{ overflow: 'hidden' }}>
+      {/* Header row — always visible */}
+      <div
+        style={{ padding: '18px 20px', cursor: 'pointer', userSelect: 'none' }}
+        onClick={() => setExpanded(e => !e)}
+      >
+        <div className="row" style={{ alignItems: 'flex-start', gap: 16 }}>
+          {/* Week badge */}
+          <div style={{ flexShrink: 0 }}>
+            <div style={{
+              width: 52, height: 52, borderRadius: 12,
+              background: 'var(--accent-soft)', color: 'var(--accent)',
+              display: 'grid', placeItems: 'center',
+            }}>
+              <div style={{ textAlign: 'center' }}>
+                <div style={{ fontSize: 9, opacity: 0.7, fontWeight: 700, letterSpacing: '0.07em' }}>WK</div>
+                <div style={{ fontSize: 20, lineHeight: 1, fontWeight: 700 }}>{week}</div>
+              </div>
+            </div>
+          </div>
+
+          {/* Title + meta */}
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div className="row" style={{ gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+              <h3 style={{ margin: 0, fontSize: 15, letterSpacing: '-0.01em' }}>{m.title}</h3>
+              {chunks.length > 0 && (
+                <Badge tone="outline"><Icon name="docs" size={11} /> {chunks.length} sections</Badge>
+              )}
+            </div>
+            {m.summary && (
+              <div className="muted" style={{ marginTop: 5, fontSize: 13, lineHeight: 1.5, maxWidth: 680 }}>
+                {m.summary}
+              </div>
+            )}
+            {concepts.length > 0 && (
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5, marginTop: 10 }}>
+                {concepts.map(c => (
+                  <span key={c} style={{
+                    padding: '2px 9px', borderRadius: 99, fontSize: 11.5,
+                    background: 'var(--surface-2)', color: 'var(--text-2)',
+                    border: '1px solid var(--border)',
+                  }}>{c}</span>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* Expand toggle */}
+          <div style={{ flexShrink: 0, color: 'var(--text-3)', marginTop: 2 }}>
+            <Icon name={expanded ? 'chevronLeft' : 'chevronRight'} size={14} style={{ transform: expanded ? 'rotate(90deg)' : 'rotate(-90deg)', transition: 'transform 0.2s' }} />
+          </div>
+        </div>
+      </div>
+
+      {/* Expanded content */}
+      {expanded && chunks.length > 0 && (
+        <div style={{ borderTop: '1px solid var(--border)', background: 'var(--bg)' }}>
+          {chunks.map((c, ci) => (
+            <div key={c.id ?? ci} style={{
+              padding: '16px 20px 16px 88px',
+              borderBottom: ci < chunks.length - 1 ? '1px solid var(--border)' : 'none',
+            }}>
+              <div className="row" style={{ gap: 10, alignItems: 'flex-start' }}>
+                <span style={{
+                  flexShrink: 0, width: 22, height: 22, borderRadius: 99,
+                  background: 'var(--surface)', border: '1px solid var(--border)',
+                  display: 'grid', placeItems: 'center',
+                  fontSize: 10, color: 'var(--text-3)', fontFamily: 'var(--font-mono)',
+                }}>{ci + 1}</span>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{
+                    fontSize: 13, lineHeight: 1.65, color: 'var(--text-1)',
+                    whiteSpace: 'pre-wrap', wordBreak: 'break-word',
+                    maxHeight: 260, overflow: 'auto',
+                  }}>
+                    {(c.content ?? '').trim()}
+                  </div>
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {expanded && chunks.length === 0 && (
+        <div style={{ borderTop: '1px solid var(--border)', padding: '16px 20px', color: 'var(--text-3)', fontSize: 13 }}>
+          No content sections attached to this module.
+        </div>
+      )}
+    </div>
+  )
+}
+
 export default function AdminPathPreview() {
   const { projectId } = useParams()
   const navigate = useNavigate()
@@ -47,6 +148,7 @@ export default function AdminPathPreview() {
   const modules = path?.modules ?? []
   const allSameWeek = modules.length > 0 && modules.every(m => m.week_number === modules[0].week_number)
   const totalWeeks = modules.length > 0 ? Math.max(...modules.map((m, i) => allSameWeek ? i + 1 : (m.week_number ?? i + 1))) : 0
+  const totalSections = modules.reduce((sum, m) => sum + (m.chunks?.length ?? 0), 0)
 
   return (
     <>
@@ -74,12 +176,12 @@ export default function AdminPathPreview() {
               <Badge tone={published ? 'success' : 'warning'} dot>{published ? 'Published' : 'Draft'}</Badge>
               <Badge tone="ai" dot>AI generated</Badge>
             </div>
-            <div className="sub">{modules.length} modules · Generated by Atlas</div>
+            <div className="sub">{modules.length} modules · {totalSections} sections · Generated by Atlas · Click any module to expand content</div>
           </div>
         </div>
 
         <div className="page-body">
-          <div className="col" style={{ gap: 16 }}>
+          <div className="col" style={{ gap: 12 }}>
             {modules.length === 0 ? (
               <div className="empty card">
                 <div className="illu"><Icon name="layers" /></div>
@@ -91,94 +193,7 @@ export default function AdminPathPreview() {
               </div>
             ) : modules.map((m, i) => {
               const week = allSameWeek ? i + 1 : (m.week_number ?? i + 1)
-              const concepts = m.key_concepts
-                ? m.key_concepts.split(',').map(s => s.trim()).filter(Boolean)
-                : []
-              const sectionCount = m.chunks?.length ?? 0
-
-              return (
-                <div key={m.id ?? i} className="card">
-                  <div className="card-body">
-                    <div className="row" style={{ alignItems: 'flex-start', gap: 16 }}>
-                      {/* Week badge column */}
-                      <div style={{ flexShrink: 0, textAlign: 'center' }}>
-                        <div style={{
-                          width: 56, height: 56, borderRadius: 12,
-                          background: 'var(--accent-soft)', color: 'var(--accent)',
-                          display: 'grid', placeItems: 'center',
-                        }}>
-                          <div>
-                            <div style={{ fontSize: 10, opacity: 0.7, fontWeight: 600, letterSpacing: '0.06em' }}>WK</div>
-                            <div style={{ fontSize: 22, lineHeight: 1, fontWeight: 700 }}>{week}</div>
-                          </div>
-                        </div>
-                      </div>
-
-                      {/* Content column */}
-                      <div style={{ flex: 1, minWidth: 0 }}>
-                        <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
-                          <h3 style={{ margin: 0, fontSize: 16, letterSpacing: '-0.01em' }}>{m.title}</h3>
-                          <div className="row" style={{ gap: 6, flexShrink: 0 }}>
-                            {sectionCount > 0 && (
-                              <Badge tone="outline">
-                                <Icon name="docs" size={11} /> {sectionCount} sections
-                              </Badge>
-                            )}
-                          </div>
-                        </div>
-
-                        {m.summary && (
-                          <div className="muted" style={{ marginTop: 6, fontSize: 13, lineHeight: 1.5 }}>
-                            {m.summary}
-                          </div>
-                        )}
-
-                        {concepts.length > 0 && (
-                          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 12 }}>
-                            {concepts.map(c => (
-                              <span key={c} style={{
-                                padding: '3px 10px', borderRadius: 99, fontSize: 12,
-                                background: 'var(--surface-2)', color: 'var(--text-2)',
-                                border: '1px solid var(--border)',
-                              }}>
-                                {c}
-                              </span>
-                            ))}
-                          </div>
-                        )}
-
-                        {m.chunks && m.chunks.length > 0 && (
-                          <div style={{ marginTop: 14, display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))', gap: 8 }}>
-                            {m.chunks.slice(0, 6).map((c, ci) => (
-                              <div key={c.id ?? ci} style={{
-                                padding: '8px 12px', background: 'var(--surface-2)',
-                                borderRadius: 8, fontSize: 12, display: 'flex', alignItems: 'flex-start', gap: 8,
-                                border: '1px solid var(--border)',
-                              }}>
-                                <span style={{
-                                  width: 18, height: 18, borderRadius: 99, background: 'var(--surface)',
-                                  border: '1px solid var(--border)', display: 'grid', placeItems: 'center',
-                                  fontSize: 10, color: 'var(--text-3)', fontFamily: 'var(--font-mono)', flexShrink: 0,
-                                }}>
-                                  {ci + 1}
-                                </span>
-                                <span style={{ color: 'var(--text-2)', lineHeight: 1.4 }}>
-                                  {(c.content ?? '').slice(0, 60)}{(c.content ?? '').length > 60 ? '…' : ''}
-                                </span>
-                              </div>
-                            ))}
-                            {m.chunks.length > 6 && (
-                              <div style={{ padding: '8px 12px', background: 'var(--surface-2)', borderRadius: 8, fontSize: 12, color: 'var(--text-3)', display: 'flex', alignItems: 'center', border: '1px solid var(--border)' }}>
-                                +{m.chunks.length - 6} more sections
-                              </div>
-                            )}
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              )
+              return <ModuleCard key={m.id ?? i} m={m} index={i} week={week} />
             })}
 
             {modules.length > 0 && (

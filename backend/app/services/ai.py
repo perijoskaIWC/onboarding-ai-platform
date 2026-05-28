@@ -54,17 +54,20 @@ async def generate_learning_path(
     path_name: str = "Standard",
     duration_weeks: int = 4,
     custom_instruction: str = "",
+    document_ids: list[str] | None = None,
 ) -> LearningPath:
     from ..models.module_chunk import ModuleChunk
 
+    doc_filter = document_ids if document_ids else None
+
     # RAG retrieval: instruction query for focused coverage, or multi-seed for broad coverage
     if custom_instruction.strip():
-        sample = list(await _retrieve_chunks(custom_instruction, project_id, 40, session, openai_client, embedding_model))
+        sample = list(await _retrieve_chunks(custom_instruction, project_id, 40, session, openai_client, embedding_model, doc_filter))
     else:
         seen_ids: set = set()
         sample = []
         for q in SEED_QUERIES:
-            for c in await _retrieve_chunks(q, project_id, 8, session, openai_client, embedding_model):
+            for c in await _retrieve_chunks(q, project_id, 8, session, openai_client, embedding_model, doc_filter):
                 if c.id not in seen_ids:
                     seen_ids.add(c.id)
                     sample.append(c)
@@ -268,6 +271,73 @@ async def generate_questions(
     if isinstance(data, dict):
         data = next(iter(data.values()))
     return data[:quiz_length]
+
+
+async def generate_questions_for_path(
+    path_id: str,
+    project_id: str,
+    quiz_length: int,
+    session: Session,
+    openai_client: AsyncOpenAI,
+    chat_model: str,
+    embedding_model: str,
+) -> list[tuple[dict, str, str]]:
+    """Generate questions per module using that module's assigned chunks.
+    Returns list of (question_dict, module_id, path_id) triples."""
+    from ..models.module_chunk import ModuleChunk
+    from ..models.document_chunk import DocumentChunk as DC
+
+    modules = session.exec(
+        select(LearningModule)
+        .where(LearningModule.learning_path_id == path_id)
+        .order_by(LearningModule.order_index)
+    ).all()
+
+    if not modules:
+        return []
+
+    questions_per_module = max(2, quiz_length // len(modules))
+    results = []
+
+    for module in modules:
+        chunks = session.exec(
+            select(DC)
+            .join(ModuleChunk, ModuleChunk.chunk_id == DC.id)
+            .where(ModuleChunk.module_id == module.id)
+            .order_by(ModuleChunk.order_index)
+        ).all()
+
+        if not chunks:
+            continue
+
+        corpus = "\n\n---\n\n".join(c.content for c in chunks)
+        system_prompt = (
+            f"You are a quiz designer. Generate exactly {questions_per_module} multiple-choice questions "
+            f"testing knowledge of: {module.title}. Use ONLY the provided learning material. "
+            'Respond ONLY with a valid JSON object: '
+            '{"questions": [{"question": "...", "options": ["A) ...", "B) ...", "C) ...", "D) ..."], "answer": "A", "explanation": "..."}]} '
+            "No markdown fences."
+        )
+
+        response = await openai_client.chat.completions.create(
+            model=chat_model,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": f"Learning material:\n\n{corpus}"},
+            ],
+            temperature=0.4,
+            response_format={"type": "json_object"},
+        )
+
+        raw = response.choices[0].message.content
+        data = json.loads(raw)
+        if isinstance(data, dict):
+            data = next(iter(data.values()))
+
+        for item in data[:questions_per_module]:
+            results.append((item, module.id, path_id))
+
+    return results
 
 
 async def generate_adaptive_questions(

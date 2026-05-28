@@ -1,23 +1,25 @@
 import { useState, useEffect } from 'react'
-import { useParams, useNavigate } from 'react-router-dom'
+import { useParams, useNavigate, useLocation } from 'react-router-dom'
 import Topbar from '../../components/shell/Topbar'
 import { StatusBadge, Badge, Progress } from '../../components/ui'
 import Icon from '../../icons'
-import { getLearnerLearningPath } from '../../services/learningPath'
+import { getLearnerPath, getLearnerLearningPath } from '../../services/learningPath'
 
 export default function LearnerModule() {
   const { pathId } = useParams()
   const navigate = useNavigate()
+  const location = useLocation()
+  const { projectId, projectName } = location.state ?? {}
   const [path, setPath] = useState(null)
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
     if (!pathId) return
-    getLearnerLearningPath(pathId)
-      .then(setPath)
-      .catch(() => {})
-      .finally(() => setLoading(false))
-  }, [pathId])
+    const fetch = projectId
+      ? getLearnerPath(projectId, pathId)
+      : getLearnerLearningPath(pathId)   // backward compat: pathId was projectId
+    fetch.then(setPath).catch(() => {}).finally(() => setLoading(false))
+  }, [pathId, projectId])
 
   if (loading) {
     return (
@@ -37,7 +39,7 @@ export default function LearnerModule() {
 
   return (
     <>
-      <Topbar crumbs={['Learning paths', path?.path_name ?? '…']} />
+      <Topbar crumbs={['Learning paths', projectName ?? path?.path_name ?? '…']} />
       <div className="viewport">
         <div className="page-header">
           <button className="icon-btn" onClick={() => navigate('/v2/learner/paths')}><Icon name="arrowLeft" size={16} /></button>
@@ -63,7 +65,7 @@ export default function LearnerModule() {
               <div className="col" style={{ gap: 8 }}>
                 {modules.map((m, mi) => (
                   <div key={m.id} className="card" style={{ overflow: 'hidden', cursor: 'pointer' }}
-                    onClick={() => navigate(`/v2/learner/paths/${pathId}/chapters/${m.id}`, { state: { module: m, modules, pathId } })}>
+                    onClick={() => navigate(`/v2/learner/paths/${pathId}/chapters/${m.id}`, { state: { module: m, modules, pathId, projectId, projectName } })}>
                     <div className="row" style={{ padding: '14px 16px', gap: 14 }}>
                       <div style={{
                         width: 40, height: 40, borderRadius: 10, flexShrink: 0, display: 'grid', placeItems: 'center',
@@ -94,7 +96,7 @@ export default function LearnerModule() {
 
                 {/* Quiz row at the end */}
                 <div className="card" style={{ overflow: 'hidden', cursor: 'pointer', opacity: completed < modules.length ? 0.5 : 1 }}
-                  onClick={() => completed >= modules.length && navigate(`/v2/learner/paths/${pathId}/quiz`)}>
+                  onClick={() => completed >= modules.length && navigate(`/v2/learner/paths/${pathId}/quiz`, { state: { projectId, projectName } })}>
                   <div className="row" style={{ padding: '14px 16px', gap: 14 }}>
                     <div style={{ width: 40, height: 40, borderRadius: 10, flexShrink: 0, display: 'grid', placeItems: 'center', background: 'var(--surface-2)', color: 'var(--text-3)' }}>
                       <Icon name="check" size={18} />

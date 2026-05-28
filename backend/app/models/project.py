@@ -15,6 +15,7 @@ class Project(SQLModel, table=True):
     chunk_overlap: int = Field(default=50)
     rag_top_k: int = Field(default=5)
     quiz_length: int = Field(default=10)
+    quiz_attempt_size: Optional[int] = Field(default=None)
     duration_weeks: int = Field(default=4)
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))

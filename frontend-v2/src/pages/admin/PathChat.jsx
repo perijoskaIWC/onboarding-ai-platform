@@ -1,11 +1,15 @@
 import { useState, useEffect, useRef } from 'react'
-import { useParams, useNavigate } from 'react-router-dom'
+import { useParams, useNavigate, useSearchParams } from 'react-router-dom'
+import { marked } from 'marked'
 import Topbar from '../../components/shell/Topbar'
 import { Badge, FileIcon } from '../../components/ui'
 import Icon from '../../icons'
 import { getProject } from '../../services/projects'
 import { listProjectDocuments } from '../../services/documents'
 import { getAdminLearningPath, generateLearningPath, pathDesignerChat } from '../../services/learningPath'
+import { updateProject } from '../../services/projects'
+
+marked.setOptions({ breaks: true, gfm: true })
 
 const SUGGESTIONS = [
   'What topics does the current path cover?',
@@ -26,10 +30,16 @@ function ConfigRow({ label, value }) {
 export default function AdminPathChat() {
   const { projectId } = useParams()
   const navigate = useNavigate()
+  const [searchParams] = useSearchParams()
+  const managePathName = searchParams.get('path_name') // set when coming from "Manage" — absent for "New path"
   const [project, setProject] = useState(null)
   const [docs, setDocs] = useState([])
   const [selectedDocIds, setSelectedDocIds] = useState(new Set())
   const [path, setPath] = useState(null)
+  const [pathName, setPathName] = useState('')
+  const [quizPool, setQuizPool] = useState('')
+  const [quizAttempt, setQuizAttempt] = useState('')
+  const [savingQuiz, setSavingQuiz] = useState(false)
   const [msgs, setMsgs] = useState([])
   const [input, setInput] = useState('')
   const [chatLoading, setChatLoading] = useState(false)   // waiting for AI reply
@@ -41,20 +51,31 @@ export default function AdminPathChat() {
 
   useEffect(() => {
     if (!projectId) return
-    getProject(projectId).then(setProject).catch(() => {})
+    getProject(projectId).then(p => {
+      setProject(p)
+      setQuizPool(p.quiz_length ?? 10)
+      setQuizAttempt(p.quiz_attempt_size ?? '')
+    }).catch(() => {})
     listProjectDocuments(projectId).then(data => {
       setDocs(data)
       setSelectedDocIds(new Set(data.map(d => d.id)))
     }).catch(() => {})
-    getAdminLearningPath(projectId)
-      .then(p => {
-        setPath(p)
-        const greeting = `I've loaded the existing learning path — ${p.modules?.length ?? 0} modules over ${p.modules ? Math.max(...p.modules.map(m => m.week_number ?? 1)) : '?'} weeks. Ask me anything about it, or tell me how to change it.`
-        setMsgs([{ from: 'ai', text: greeting }])
-      })
-      .catch(() => {
-        setMsgs([{ from: 'ai', text: 'No learning path yet. Tell me what you need and I\'ll generate one — or just say "Generate a path".' }])
-      })
+    if (managePathName) {
+      // "Manage" flow — load the specific named path
+      getAdminLearningPath(projectId, null, managePathName)
+        .then(p => {
+          setPath(p)
+          setPathName(p.path_name ?? managePathName)
+          const greeting = `I've loaded "${p.path_name}" — ${p.modules?.length ?? 0} modules. Ask me anything about it, or tell me how to change it.`
+          setMsgs([{ from: 'ai', text: greeting }])
+        })
+        .catch(() => {
+          setMsgs([{ from: 'ai', text: `Couldn't load path "${managePathName}". It may have been deleted.` }])
+        })
+    } else {
+      // "New path" flow — start blank
+      setMsgs([{ from: 'ai', text: 'No learning path yet. Give it a name, then tell me what to generate — or just click Generate.' }])
+    }
   }, [projectId])
 
   useEffect(() => {
@@ -94,10 +115,10 @@ export default function AdminPathChat() {
     }, 3000)
   }
 
-  const triggerGeneration = async (instruction, durationWeeks, prevGeneratedAt) => {
+  const triggerGeneration = async (instruction, durationWeeks, prevGeneratedAt, docIds) => {
     setGenerating(true)
     try {
-      await generateLearningPath(projectId, instruction, durationWeeks)
+      await generateLearningPath(projectId, instruction, durationWeeks, docIds, pathName.trim() || 'Standard')
       pollForNewPath(prevGeneratedAt)
     } catch {
       setGenerating(false)
@@ -108,6 +129,10 @@ export default function AdminPathChat() {
   const send = async (text) => {
     const t = (text ?? input).trim()
     if (!t || chatLoading || generating) return
+    if (selectedDocIds.size === 0) {
+      appendMsg({ from: 'ai', text: 'No documents are selected. Please select at least one source document from the left panel before generating a path.' })
+      return
+    }
     setInput('')
 
     // Add user message
@@ -120,7 +145,7 @@ export default function AdminPathChat() {
     const history = historyRef.current
 
     try {
-      const result = await pathDesignerChat(projectId, t, history, [...selectedDocIds])
+      const result = await pathDesignerChat(projectId, t, history, [...selectedDocIds], pathName.trim() || null)
 
       // Update history with this exchange
       historyRef.current = [
@@ -139,7 +164,7 @@ export default function AdminPathChat() {
         setChatLoading(false)
         // Show "working" bubble
         appendMsg({ from: 'ai', text: 'Rebuilding the path now — this takes about 30–60 seconds…', _loading: true })
-        await triggerGeneration(result.instruction || t, result.duration_weeks, prevGeneratedAt)
+        await triggerGeneration(result.instruction || t, result.duration_weeks, prevGeneratedAt, [...selectedDocIds])
       } else {
         replaceLoading({ from: 'ai', text: result.reply })
         setChatLoading(false)
@@ -150,7 +175,25 @@ export default function AdminPathChat() {
     }
   }
 
-  const handleGenerate = () => send('Generate a structured learning path from the assigned documents.')
+  const handleGenerate = () => {
+    const docIds = [...selectedDocIds]
+    const t = docIds.length > 0
+      ? `Generate a structured learning path using only the selected ${docIds.length} document(s).`
+      : 'Generate a structured learning path from the assigned documents.'
+    send(t)
+  }
+
+  const saveQuizConfig = async () => {
+    setSavingQuiz(true)
+    try {
+      const payload = { quiz_length: Number(quizPool) || 10 }
+      payload.quiz_attempt_size = quizAttempt !== '' ? Number(quizAttempt) : null
+      const updated = await updateProject(projectId, payload)
+      setProject(p => ({ ...p, ...updated }))
+    } finally {
+      setSavingQuiz(false)
+    }
+  }
 
   const busy = chatLoading || generating
 
@@ -190,8 +233,8 @@ export default function AdminPathChat() {
             ) : (
               <>
                 <div className="row" style={{ padding: '0 8px 6px', gap: 6 }}>
-                  <button className="chip" style={{ fontSize: 11 }} onClick={() => setSelectedDocIds(new Set(docs.map(d => d.id)))}>All</button>
-                  <button className="chip" style={{ fontSize: 11 }} onClick={() => setSelectedDocIds(new Set())}>None</button>
+                  <button className="chip" style={{ fontSize: 11 }} onClick={() => { setSelectedDocIds(new Set(docs.map(d => d.id))); historyRef.current = []; setMsgs([{ from: 'ai', text: 'Document selection updated. Ask me anything.' }]) }}>All</button>
+                  <button className="chip" style={{ fontSize: 11 }} onClick={() => { setSelectedDocIds(new Set()); historyRef.current = [] }}>None</button>
                   <span className="muted" style={{ fontSize: 11, marginLeft: 'auto' }}>{selectedDocIds.size}/{docs.length} selected</span>
                 </div>
                 {docs.map(d => {
@@ -200,6 +243,7 @@ export default function AdminPathChat() {
                     const s = new Set(selectedDocIds)
                     checked ? s.delete(d.id) : s.add(d.id)
                     setSelectedDocIds(s)
+                    historyRef.current = []
                   }
                   return (
                     <label key={d.id} className="row" style={{ padding: '6px 8px', borderRadius: 6, cursor: 'pointer', gap: 8, opacity: checked ? 1 : 0.45 }}>
@@ -216,11 +260,64 @@ export default function AdminPathChat() {
             )}
           </div>
           <div style={{ borderTop: '1px solid var(--border)', padding: 12 }}>
-            <div style={{ fontSize: 11, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 10, fontWeight: 600 }}>Configuration</div>
+            <div style={{ fontSize: 11, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 10, fontWeight: 600 }}>New path</div>
+            <div className="col" style={{ gap: 8 }}>
+              <div>
+                <div className="muted" style={{ fontSize: 11, marginBottom: 4 }}>Path name</div>
+                <input
+                  className="input"
+                  style={{ fontSize: 12, padding: '5px 8px', width: '100%' }}
+                  placeholder="e.g. Junior Track"
+                  value={pathName}
+                  onChange={e => setPathName(e.target.value)}
+                />
+              </div>
+            </div>
+            <div style={{ fontSize: 11, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.06em', margin: '12px 0 10px', fontWeight: 600 }}>Quiz settings</div>
+            <div className="col" style={{ gap: 8 }}>
+              <div>
+                <div className="muted" style={{ fontSize: 11, marginBottom: 4 }}>Questions to generate</div>
+                <input
+                  className="input"
+                  type="number"
+                  min="1"
+                  style={{ fontSize: 12, padding: '5px 8px', width: '100%' }}
+                  placeholder="e.g. 20"
+                  value={quizPool}
+                  onChange={e => setQuizPool(e.target.value)}
+                />
+              </div>
+              <div>
+                <div className="muted" style={{ fontSize: 11, marginBottom: 4 }}>
+                  Learner gets (random per attempt)
+                </div>
+                <input
+                  className="input"
+                  type="number"
+                  min="1"
+                  style={{ fontSize: 12, padding: '5px 8px', width: '100%' }}
+                  placeholder={`max ${quizPool || '?'} (leave blank = all)`}
+                  value={quizAttempt}
+                  onChange={e => setQuizAttempt(e.target.value)}
+                />
+                {quizAttempt && Number(quizAttempt) < Number(quizPool) && (
+                  <div style={{ fontSize: 10.5, color: 'var(--ai)', marginTop: 3 }}>
+                    Learner gets {quizAttempt} random of {quizPool} — different every attempt
+                  </div>
+                )}
+              </div>
+              <button
+                className="btn primary sm"
+                style={{ width: '100%', marginTop: 2 }}
+                onClick={saveQuizConfig}
+                disabled={savingQuiz}
+              >
+                {savingQuiz ? 'Saving…' : 'Save quiz settings'}
+              </button>
+            </div>
+            <div style={{ fontSize: 11, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.06em', margin: '12px 0 10px', fontWeight: 600 }}>Path settings</div>
             <div className="col" style={{ gap: 10 }}>
               <ConfigRow label="Duration" value={`${project?.duration_weeks ?? 4} weeks`} />
-              <ConfigRow label="Quiz length" value={`${project?.quiz_length ?? 10} questions`} />
-              <ConfigRow label="Pass threshold" value="75%" />
               <ConfigRow label="Chunk size" value={project?.chunk_size ?? 500} />
             </div>
           </div>
@@ -250,7 +347,9 @@ export default function AdminPathChat() {
                           <span key={d} style={{ width: 6, height: 6, borderRadius: '50%', background: 'var(--text-3)', display: 'inline-block', animation: `bounce 1.2s ${d * 0.2}s infinite` }} />
                         ))}
                       </div>
-                    : <div>{m.text}</div>
+                    : m.from === 'ai'
+                      ? <div className="md-body" dangerouslySetInnerHTML={{ __html: marked.parse(m.text || '') }} />
+                      : <div>{m.text}</div>
                   }
                 </div>
               ))}
@@ -346,6 +445,13 @@ export default function AdminPathChat() {
           0%, 80%, 100% { transform: translateY(0); opacity: 0.4; }
           40% { transform: translateY(-5px); opacity: 1; }
         }
+        .md-body { font-size: 13.5px; line-height: 1.6; }
+        .md-body h1, .md-body h2, .md-body h3 { font-size: 13.5px; font-weight: 600; margin: 10px 0 4px; }
+        .md-body ul, .md-body ol { padding-left: 18px; margin: 4px 0; }
+        .md-body li { margin: 2px 0; }
+        .md-body p { margin: 4px 0; }
+        .md-body strong { font-weight: 600; }
+        .md-body code { background: var(--surface-2); padding: 1px 5px; border-radius: 4px; font-size: 12px; }
       `}</style>
     </>
   )

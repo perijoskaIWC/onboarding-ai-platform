@@ -8,6 +8,8 @@ class Question(SQLModel, table=True):
 
     id: str = Field(default_factory=lambda: str(uuid.uuid4()), primary_key=True)
     project_id: str = Field(foreign_key="projects.id", index=True)
+    module_id: Optional[str] = Field(default=None, foreign_key="learning_modules.id", index=True)
+    learning_path_id: Optional[str] = Field(default=None, foreign_key="learning_paths.id", index=True)
     question_text: str
     option_a: str
     option_b: str

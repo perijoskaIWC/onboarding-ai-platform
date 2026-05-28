@@ -1,5 +1,5 @@
 from typing import Optional
-from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, Request
+from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, Query, Request
 from pydantic import BaseModel, field_validator
 from sqlmodel import Session, select, update
 
@@ -104,11 +104,18 @@ async def generate_project_questions(
 @router.get("/admin/projects/{project_id}/questions")
 async def list_questions(
     project_id: str,
+    learning_path_id: Optional[str] = Query(default=None),
+    module_id: Optional[str] = Query(default=None),
     admin=Depends(require_admin),
     session: Session = Depends(get_session),
 ):
     _get_project_or_404(project_id, admin.id, session)
-    questions = session.exec(select(Question).where(Question.project_id == project_id)).all()
+    q = select(Question).where(Question.project_id == project_id)
+    if learning_path_id:
+        q = q.where(Question.learning_path_id == learning_path_id)
+    if module_id:
+        q = q.where(Question.module_id == module_id)
+    questions = session.exec(q).all()
     return [q.model_dump() for q in questions]
 
 

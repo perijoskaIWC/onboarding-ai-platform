@@ -8,6 +8,7 @@ from sqlmodel import Session, select
 from ...core.database import get_session, engine
 from ...core.security import require_learner
 from ...core.config import settings
+from ...models.learning_path import LearningPath
 from ...models.project_assignment import ProjectAssignment
 from ...models.question import Question
 from ...models.quiz_attempt import QuizAttempt
@@ -31,6 +32,37 @@ def _check_assigned(project_id: str, learner_id: str, session: Session):
     ).first()
     if not assignment:
         raise HTTPException(status_code=403, detail="Not assigned to this project")
+
+
+def _get_path_questions(project_id: str, session: Session) -> list:
+    """Return published questions scoped to the active published path.
+    Falls back to legacy flat questions (no learning_path_id) if none found."""
+    active_path = session.exec(
+        select(LearningPath).where(
+            LearningPath.project_id == project_id,
+            LearningPath.is_published == True,
+        )
+    ).first()
+
+    if active_path:
+        qs = session.exec(
+            select(Question).where(
+                Question.project_id == project_id,
+                Question.learning_path_id == active_path.id,
+                Question.is_published == True,
+            )
+        ).all()
+        if qs:
+            return list(qs)
+
+    # Fallback: legacy questions with no path association
+    return list(session.exec(
+        select(Question).where(
+            Question.project_id == project_id,
+            Question.is_published == True,
+            Question.learning_path_id == None,  # noqa: E711
+        )
+    ).all())
 
 
 async def _run_adaptive(project_id: str, learner_id: str, score: float, wrong_topics: list[str], openai_client, chat_model: str, embedding_model: str):
@@ -72,15 +104,16 @@ async def get_quiz(
     learner=Depends(require_learner),
     session: Session = Depends(get_session),
 ):
+    from ...models.project import Project
     _check_assigned(project_id, learner.id, session)
-    questions = session.exec(
-        select(Question).where(Question.project_id == project_id, Question.is_published == True)
-    ).all()
+    questions = _get_path_questions(project_id, session)
     if not questions:
         raise HTTPException(status_code=404, detail="No questions available yet")
 
-    if count and count < len(questions):
-        questions = random.sample(list(questions), count)
+    project = session.get(Project, project_id)
+    cap = count or (project.quiz_attempt_size if project else None)
+    if cap and cap < len(questions):
+        questions = random.sample(list(questions), cap)
 
     return [
         {
@@ -103,9 +136,7 @@ async def submit_quiz(
 ):
     _check_assigned(project_id, learner.id, session)
 
-    questions = session.exec(
-        select(Question).where(Question.project_id == project_id, Question.is_published == True)
-    ).all()
+    questions = _get_path_questions(project_id, session)
     if not questions:
         raise HTTPException(status_code=404, detail="No questions available")
 

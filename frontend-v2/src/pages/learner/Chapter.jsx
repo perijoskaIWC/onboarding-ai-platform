@@ -3,12 +3,13 @@ import { useParams, useNavigate, useLocation } from 'react-router-dom'
 import Topbar from '../../components/shell/Topbar'
 import { Badge } from '../../components/ui'
 import Icon from '../../icons'
-import { getLearnerLearningPath, completeModule } from '../../services/learningPath'
+import { getLearnerPath, getLearnerLearningPath, completePathModule, completeModule } from '../../services/learningPath'
 
 export default function LearnerChapter() {
   const { pathId, chapterId } = useParams()
   const navigate = useNavigate()
   const location = useLocation()
+  const { projectId, projectName } = location.state ?? {}
   const [focus, setFocus] = useState(false)
   const [bookmarked, setBookmarked] = useState(false)
   const [completing, setCompleting] = useState(false)
@@ -17,11 +18,14 @@ export default function LearnerChapter() {
 
   useEffect(() => {
     if (modules.length > 0) return
-    getLearnerLearningPath(pathId)
+    const fetch = projectId
+      ? getLearnerPath(projectId, pathId)
+      : getLearnerLearningPath(pathId)
+    fetch
       .then(data => setModules(data?.modules ?? []))
       .catch(() => {})
       .finally(() => setLoading(false))
-  }, [pathId])
+  }, [pathId, projectId])
 
   const module = location.state?.module ?? modules.find(m => m.id === chapterId)
   const currentIdx = modules.findIndex(m => m.id === chapterId)
@@ -32,17 +36,22 @@ export default function LearnerChapter() {
 
   const handleComplete = async () => {
     setCompleting(true)
+    const stateBase = { modules, pathId, projectId, projectName }
     try {
-      await completeModule(pathId, chapterId)
+      if (projectId) {
+        await completePathModule(projectId, pathId, chapterId)
+      } else {
+        await completeModule(pathId, chapterId)
+      }
       if (nextModule) {
         navigate(`/v2/learner/paths/${pathId}/chapters/${nextModule.id}`, {
-          state: { module: nextModule, modules, pathId }
+          state: { module: nextModule, ...stateBase }
         })
       } else {
-        navigate(`/v2/learner/paths/${pathId}`)
+        navigate(`/v2/learner/paths/${pathId}`, { state: { projectId, projectName } })
       }
     } catch {
-      navigate(`/v2/learner/paths/${pathId}`)
+      navigate(`/v2/learner/paths/${pathId}`, { state: { projectId, projectName } })
     } finally {
       setCompleting(false)
     }
@@ -64,7 +73,7 @@ export default function LearnerChapter() {
         <div className="viewport" style={{ display: 'grid', placeItems: 'center', height: '60vh' }}>
           <div style={{ textAlign: 'center' }}>
             <h3>Module not found</h3>
-            <button className="btn primary" onClick={() => navigate(`/v2/learner/paths/${pathId}`)}>Back to path</button>
+            <button className="btn primary" onClick={() => navigate(`/v2/learner/paths/${pathId}`, { state: { projectId, projectName } })}>Back to path</button>
           </div>
         </div>
       </>
@@ -105,7 +114,7 @@ export default function LearnerChapter() {
                   <button key={m.id}
                     className={'nav-item ' + (m.id === chapterId ? 'active' : '')}
                     style={{ padding: '7px 10px' }}
-                    onClick={() => navigate(`/v2/learner/paths/${pathId}/chapters/${m.id}`, { state: { module: m, modules, pathId } })}>
+                    onClick={() => navigate(`/v2/learner/paths/${pathId}/chapters/${m.id}`, { state: { module: m, modules, pathId, projectId, projectName } })}>
                     <span className="ico">
                       <Icon name={m.completed ? 'check' : m.id === chapterId ? 'play' : 'doc'} size={14} />
                     </span>
@@ -166,11 +175,11 @@ export default function LearnerChapter() {
 
             {/* Sticky action bar */}
             <div className="row" style={{ position: 'sticky', bottom: 16, marginTop: 48, gap: 8, padding: 12, background: 'var(--surface)', border: '1px solid var(--border)', boxShadow: 'var(--shadow-md)', borderRadius: 12 }}>
-              <button className="btn ghost" onClick={() => navigate(`/v2/learner/paths/${pathId}`)}>
+              <button className="btn ghost" onClick={() => navigate(`/v2/learner/paths/${pathId}`, { state: { projectId, projectName } })}>
                 <Icon name="chevronLeft" size={14} /> All modules
               </button>
               {prevModule && (
-                <button className="btn" onClick={() => navigate(`/v2/learner/paths/${pathId}/chapters/${prevModule.id}`, { state: { module: prevModule, modules, pathId } })}>
+                <button className="btn" onClick={() => navigate(`/v2/learner/paths/${pathId}/chapters/${prevModule.id}`, { state: { module: prevModule, modules, pathId, projectId, projectName } })}>
                   <Icon name="arrowLeft" size={14} /> Previous
                 </button>
               )}

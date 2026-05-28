@@ -1,4 +1,5 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
+from typing import Optional
 from sqlmodel import Session, select
 
 from ...core.database import get_session
@@ -60,17 +61,23 @@ async def list_my_path_names(
 @router.get("/user/projects/{project_id}/learning-path")
 async def get_my_learning_path(
     project_id: str,
+    path_id: Optional[str] = Query(default=None),
     learner=Depends(require_learner),
     session: Session = Depends(get_session),
 ):
     _check_assigned(project_id, learner.id, session)
 
-    path = session.exec(
-        select(LearningPath).where(
-            LearningPath.project_id == project_id,
-            LearningPath.is_published == True,
-        )
-    ).first()
+    if path_id:
+        path = session.get(LearningPath, path_id)
+        if not path or path.project_id != project_id or not path.is_published:
+            raise HTTPException(status_code=404, detail="Path not found or not published")
+    else:
+        path = session.exec(
+            select(LearningPath).where(
+                LearningPath.project_id == project_id,
+                LearningPath.is_published == True,
+            )
+        ).first()
 
     if not path:
         return {"status": "not_published", "modules": []}

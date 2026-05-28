@@ -35,6 +35,7 @@ from .api.user.progress import router as user_progress_router
 from .api.admin.weekly_plan import router as admin_weekly_plan_router
 from .api.user.weekly_plan import router as user_weekly_plan_router
 from .api.admin.users import router as admin_users_router
+from .api.user.paths import router as user_paths_router
 
 
 @asynccontextmanager
@@ -84,6 +85,7 @@ app.include_router(user_progress_router, prefix="/api")
 app.include_router(admin_weekly_plan_router, prefix="/api")
 app.include_router(user_weekly_plan_router, prefix="/api")
 app.include_router(admin_users_router, prefix="/api")
+app.include_router(user_paths_router, prefix="/api")
 
 
 @app.get("/health")

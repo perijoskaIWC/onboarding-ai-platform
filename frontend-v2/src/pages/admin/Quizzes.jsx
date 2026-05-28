@@ -4,6 +4,7 @@ import { Badge } from '../../components/ui'
 import Icon from '../../icons'
 import { listQuestions, publishQuestion, updateQuestion, deleteQuestion } from '../../services/quiz'
 import { listAdminProjects } from '../../services/projects'
+import { getAdminLearningPath } from '../../services/learningPath'
 
 export default function AdminQuizzes() {
   const [tab, setTab] = useState('pending')
@@ -22,11 +23,20 @@ export default function AdminQuizzes() {
     try {
       const projects = await listAdminProjects()
       const results = await Promise.all(
-        projects.map(p =>
-          listQuestions(p.id)
-            .then(qs => qs.map(q => ({ ...q, project_id: p.id, project_name: p.name })))
-            .catch(() => [])
-        )
+        projects.map(async p => {
+          const [qs, pathData] = await Promise.all([
+            listQuestions(p.id).catch(() => []),
+            getAdminLearningPath(p.id).catch(() => null),
+          ])
+          const moduleTitle = {}
+          for (const m of pathData?.modules ?? []) moduleTitle[m.id] = m.title
+          return qs.map(q => ({
+            ...q,
+            project_id: p.id,
+            project_name: p.name,
+            module_title: q.module_id ? (moduleTitle[q.module_id] ?? 'Unknown module') : null,
+          }))
+        })
       )
       setQuestions(results.flat())
     } finally {
@@ -138,6 +148,7 @@ export default function AdminQuizzes() {
                   <div key={q.id} onClick={() => setOpen(i)} style={{ padding: 16, borderBottom: '1px solid var(--border)', cursor: 'pointer', background: open === i ? 'var(--accent-soft)' : '' }}>
                     <div className="row" style={{ gap: 8, marginBottom: 6 }}>
                       <Badge tone="outline">{q.difficulty ?? 'Core'}</Badge>
+                      {q.module_title && <Badge tone="accent">{q.module_title}</Badge>}
                       <span className="muted mono" style={{ fontSize: 11, marginLeft: 'auto' }}>Q{i + 1}</span>
                     </div>
                     <div style={{ fontSize: 14, fontWeight: 500 }}>{q.question_text}</div>

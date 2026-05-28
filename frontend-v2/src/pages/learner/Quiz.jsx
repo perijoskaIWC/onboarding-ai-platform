@@ -1,12 +1,14 @@
 import { useState, useEffect } from 'react'
-import { useParams, useNavigate } from 'react-router-dom'
+import { useParams, useNavigate, useLocation } from 'react-router-dom'
 import { Badge } from '../../components/ui'
 import Icon from '../../icons'
-import { getQuiz, submitQuiz } from '../../services/quiz'
+import { getQuiz, submitQuiz, getPathQuiz, submitPathQuiz } from '../../services/quiz'
 
 export default function LearnerQuiz() {
   const { pathId } = useParams()
   const navigate = useNavigate()
+  const location = useLocation()
+  const { projectId } = location.state ?? {}
   const [quiz, setQuiz] = useState(null)
   const [questions, setQuestions] = useState([])
   const [i, setI] = useState(0)
@@ -16,16 +18,18 @@ export default function LearnerQuiz() {
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
-    getQuiz(pathId)
+    const fetch = projectId
+      ? getPathQuiz(projectId, pathId)
+      : getQuiz(pathId)   // backward compat
+    fetch
       .then(data => {
-        // backend returns array directly
         const qs = Array.isArray(data) ? data : (data.questions ?? [])
         setQuiz({ id: null })
         setQuestions(qs)
       })
       .catch(() => {})
       .finally(() => setLoading(false))
-  }, [pathId])
+  }, [pathId, projectId])
 
   useEffect(() => {
     const t = setInterval(() => setSecondsLeft(s => Math.max(0, s - 1)), 1000)
@@ -42,10 +46,12 @@ export default function LearnerQuiz() {
       if (q) formatted[q.id] = letters[oi] ?? 'A'
     })
     try {
-      const result = await submitQuiz(pathId, formatted)
-      navigate(`/v2/learner/paths/${pathId}/quiz/result`, { state: result })
+      const result = projectId
+        ? await submitPathQuiz(projectId, pathId, formatted)
+        : await submitQuiz(pathId, formatted)   // backward compat
+      navigate(`/v2/learner/paths/${pathId}/quiz/result`, { state: { ...result, projectId } })
     } catch {
-      navigate(`/v2/learner/paths/${pathId}/quiz/result`)
+      navigate(`/v2/learner/paths/${pathId}/quiz/result`, { state: { projectId } })
     } finally {
       setSubmitting(false)
     }
