@@ -310,21 +310,34 @@ function UsersTab({ projectId, showToast }) {
   const [selectedPathIds, setSelectedPathIds] = useState(new Set())
 
   const reload = async () => {
-    const [proj, avail, pathList] = await Promise.all([
+    const [proj, pathList] = await Promise.all([
       getProject(projectId),
-      getAvailableLearners(projectId).catch(() => []),
       listAdminLearningPaths(projectId).catch(() => []),
     ])
     setLearners(proj.learners ?? [])
-    setAvailable(avail)
     setPaths(pathList)
   }
 
   useEffect(() => { reload().finally(() => setLoading(false)) }, [projectId])
 
+  const loadAvailable = async (pathIds) => {
+    if (pathIds.size === 0) {
+      const avail = await getAvailableLearners(projectId).catch(() => [])
+      setAvailable(avail)
+    } else {
+      const results = await Promise.all(
+        [...pathIds].map(pid => getAvailableLearners(projectId, pid).catch(() => []))
+      )
+      const sets = results.map(r => new Set(r.map(l => l.id)))
+      const intersection = results[0].filter(l => sets.every(s => s.has(l.id)))
+      setAvailable(intersection)
+    }
+  }
+
   const openModal = () => {
     setSelectedLearner(null)
     setSelectedPathIds(new Set())
+    loadAvailable(new Set())
     setShowModal(true)
   }
 
@@ -332,6 +345,7 @@ function UsersTab({ projectId, showToast }) {
     const s = new Set(selectedPathIds)
     s.has(id) ? s.delete(id) : s.add(id)
     setSelectedPathIds(s)
+    loadAvailable(s)
   }
 
   const handleAssign = async () => {
@@ -423,7 +437,9 @@ function UsersTab({ projectId, showToast }) {
                   ))}
                 </select>
                 {available.length === 0 && (
-                  <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>No unassigned learners.</div>
+                  <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>
+                    {selectedPathIds.size > 0 ? 'All learners are already assigned to the selected path(s).' : 'No unassigned learners.'}
+                  </div>
                 )}
               </div>
               {paths.length > 0 && (
