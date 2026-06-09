@@ -10,3 +10,9 @@ export const reprocessDocument = (projectId, docId) =>
   api.post(`/admin/projects/${projectId}/documents/${docId}/reprocess`).then(r => r.data)
 export const deleteDocument = (projectId, docId) =>
   api.delete(`/admin/projects/${projectId}/documents/${docId}`)
+
+// Learner-facing: documents across all assigned projects, and full text of one.
+export const listLearnerDocuments = () =>
+  api.get('/user/documents').then(r => r.data)
+export const getLearnerDocument = (docId) =>
+  api.get(`/user/documents/${docId}`).then(r => r.data)

@@ -12,3 +12,7 @@ class LearningModule(SQLModel, table=True):
     summary: str
     key_concepts: str = Field(default="")
     week_number: int = Field(default=1)
+    # Curated, learner-facing Markdown body. Composed from the module's source
+    # chunks at generation time; editable by admins. Separate from the raw
+    # DocumentChunks (which stay immutable for RAG / quizzes / citations).
+    content: str = Field(default="")

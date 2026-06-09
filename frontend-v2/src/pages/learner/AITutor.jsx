@@ -1,45 +1,39 @@
 import { useState, useRef, useEffect } from 'react'
+import { useNavigate } from 'react-router-dom'
 import Topbar from '../../components/shell/Topbar'
-import { Badge, FileIcon } from '../../components/ui'
+import { Badge } from '../../components/ui'
 import Icon from '../../icons'
-import { sendMessage } from '../../services/chat'
-import { listLearnerProjects } from '../../services/projects'
+import { askTutor } from '../../services/chat'
+import { listLearnerDocuments } from '../../services/documents'
 
 const INITIAL_MSGS = [
   {
     from: 'ai',
-    text: "Hi! I'm Atlas. I can answer questions about anything in your onboarding materials. What are you stuck on?",
+    text: "Hi! I'm Atlas. I can answer questions about anything across all your onboarding materials. What are you stuck on?",
     suggestions: [
-      'Explain the platform architecture',
-      'Summarize the key concepts',
-      'How does authentication work?',
-      'Quiz me on what I learned',
+      'Summarize the key things I need to know',
+      'Explain a concept in simple terms',
+      'What should I study before my quiz?',
+      'Give me a real-world example',
     ],
   },
 ]
 
-const PREV_CHATS = [
-  'How does SSO work?',
-  'What are the main service patterns?',
-  'Explain deployment pipelines',
-]
-
 export default function LearnerAITutor() {
+  const navigate = useNavigate()
   const [msgs, setMsgs] = useState(INITIAL_MSGS)
   const [input, setInput] = useState('')
   const [sending, setSending] = useState(false)
-  const [projectId, setProjectId] = useState(null)
-  const [projects, setProjects] = useState([])
+  const [docs, setDocs] = useState([])
   const bottomRef = useRef()
 
+  // --- Per-learning-path scoping shelved for now: the tutor is global. ---
+  // const [projectId, setProjectId] = useState(null)
+  // const [projects, setProjects] = useState([])
+  // useEffect(() => { listLearnerProjects().then(...).catch(()=>{}) }, [])
+
   useEffect(() => {
-    listLearnerProjects()
-      .then(data => {
-        const list = Array.isArray(data) ? data : (data.projects ?? [])
-        setProjects(list)
-        if (list.length > 0) setProjectId(list[0].id)
-      })
-      .catch(() => {})
+    listLearnerDocuments().then(d => setDocs(Array.isArray(d) ? d : [])).catch(() => {})
   }, [])
 
   useEffect(() => {
@@ -49,12 +43,11 @@ export default function LearnerAITutor() {
   const send = async (text) => {
     const t = text ?? input
     if (!t.trim() || sending) return
-    const userMsg = { from: 'user', text: t }
-    setMsgs(prev => [...prev, userMsg])
+    setMsgs(prev => [...prev, { from: 'user', text: t }])
     setInput('')
     setSending(true)
     try {
-      const data = await sendMessage(projectId, t)
+      const data = await askTutor(t)
       setMsgs(prev => [...prev, {
         from: 'ai',
         text: data.answer ?? data.response ?? data.message ?? 'I received your question. Let me help you with that.',
@@ -71,22 +64,12 @@ export default function LearnerAITutor() {
     }
   }
 
-  const handleNewChat = () => {
-    setMsgs(INITIAL_MSGS)
-    setInput('')
-  }
+  const handleNewChat = () => { setMsgs(INITIAL_MSGS); setInput('') }
 
   return (
     <>
       <Topbar crumbs={['AI Tutor']} actions={
-        <>
-          {projects.length > 1 && (
-            <select className="select" value={projectId ?? ''} onChange={e => setProjectId(e.target.value)} style={{ fontSize: 13, height: 32 }}>
-              {projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
-            </select>
-          )}
-          <button className="btn" onClick={handleNewChat}><Icon name="refresh" size={14} /> New chat</button>
-        </>
+        <button className="btn" onClick={handleNewChat}><Icon name="refresh" size={14} /> New chat</button>
       } />
       <div className="viewport ai-tint" style={{ display: 'grid', gridTemplateColumns: '1fr 320px', overflow: 'hidden', height: 'calc(100vh - var(--topbar-h))' }}>
 
@@ -98,7 +81,7 @@ export default function LearnerAITutor() {
             </div>
             <div>
               <strong style={{ fontSize: 14 }}>Atlas</strong>
-              <div className="muted" style={{ fontSize: 11 }}>Tutoring based on your onboarding materials</div>
+              <div className="muted" style={{ fontSize: 11 }}>Tutoring across all your onboarding materials</div>
             </div>
             <Badge tone="success" dot style={{ marginLeft: 'auto' }}>Sourced from your materials</Badge>
           </div>
@@ -112,21 +95,24 @@ export default function LearnerAITutor() {
                     <div style={{ whiteSpace: 'pre-wrap' }}>{m.text}</div>
                     {m.cites && m.cites.length > 0 && (
                       <div className="citations">
-                        {m.cites.map((c, ci) => (
-                          <span key={ci} className="citation">{typeof c === 'string' ? c : c.title ?? c.name ?? 'Source'}</span>
-                        ))}
+                        {m.cites.map((c, ci) => {
+                          const label = typeof c === 'string' ? c : (c.filename ?? c.title ?? c.name ?? 'Source')
+                          const docId = typeof c === 'object' ? c.document_id : null
+                          return (
+                            <span
+                              key={ci}
+                              className="citation"
+                              style={docId ? { cursor: 'pointer' } : undefined}
+                              title={typeof c === 'object' && c.project_name ? c.project_name : undefined}
+                              onClick={() => docId && navigate(`/v2/learner/documents?doc=${docId}`)}
+                            >
+                              <Icon name="doc" size={10} /> {label}
+                            </span>
+                          )
+                        })}
                       </div>
                     )}
                   </div>
-                  {m.followups && (
-                    <div className="row" style={{ gap: 6, flexWrap: 'wrap', paddingLeft: 8, marginTop: 8 }}>
-                      {m.followups.map(f => (
-                        <button key={f} className="chip" onClick={() => send(f)}>
-                          <Icon name="arrow" size={10} /> {f}
-                        </button>
-                      ))}
-                    </div>
-                  )}
                   {m.suggestions && (
                     <div style={{ marginTop: 6, display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
                       {m.suggestions.map(s => (
@@ -153,11 +139,11 @@ export default function LearnerAITutor() {
 
           <div style={{ padding: '16px 24px 24px', borderTop: '1px solid var(--border)', background: 'var(--surface)' }}>
             <div style={{ maxWidth: 720, margin: '0 auto', border: '1.5px solid var(--border-strong)', borderRadius: 14, padding: 12, background: 'var(--surface)' }}>
-              <textarea value={input} onChange={e => setInput(e.target.value)} placeholder="Ask Atlas about your onboarding materials…"
+              <textarea value={input} onChange={e => setInput(e.target.value)} placeholder="Ask Atlas about any of your onboarding materials…"
                 onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send() } }}
                 style={{ width: '100%', border: 0, outline: 0, resize: 'none', background: 'transparent', fontFamily: 'var(--font-sans)', fontSize: 14, minHeight: 50, padding: 0 }} />
               <div className="row" style={{ marginTop: 6 }}>
-                <span className="muted" style={{ fontSize: 11 }}>Atlas only answers from indexed materials</span>
+                <span className="muted" style={{ fontSize: 11 }}>Atlas only answers from your indexed materials</span>
                 <button className="btn ai sm" style={{ marginLeft: 'auto' }} onClick={() => send()} disabled={sending}>
                   <Icon name="send" size={12} /> {sending ? 'Sending…' : 'Ask'}
                 </button>
@@ -176,11 +162,27 @@ export default function LearnerAITutor() {
               </button>
             ))}
           </div>
+
           <div className="sep" style={{ margin: '16px 0' }} />
-          <div style={{ fontSize: 11, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.06em', fontWeight: 600, marginBottom: 10 }}>Previous chats</div>
+
+          <div className="row" style={{ marginBottom: 10 }}>
+            <span style={{ fontSize: 11, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.06em', fontWeight: 600 }}>Your documents</span>
+            {docs.length > 0 && (
+              <button className="btn ghost sm" style={{ marginLeft: 'auto' }} onClick={() => navigate('/v2/learner/documents')}>
+                View all
+              </button>
+            )}
+          </div>
           <div className="col" style={{ gap: 6 }}>
-            {PREV_CHATS.map(t => (
-              <button key={t} style={{ textAlign: 'left', padding: 10, background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 8, fontSize: 12.5, cursor: 'pointer' }}>{t}</button>
+            {docs.length === 0 ? (
+              <div className="muted" style={{ fontSize: 12.5 }}>No documents available yet.</div>
+            ) : docs.slice(0, 8).map(d => (
+              <button key={d.id} title={d.project_name}
+                style={{ textAlign: 'left', padding: 10, background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 8, fontSize: 12.5, cursor: 'pointer', display: 'flex', gap: 8, alignItems: 'center' }}
+                onClick={() => navigate(`/v2/learner/documents?doc=${d.id}`)}>
+                <Icon name="doc" size={13} style={{ color: 'var(--text-3)', flexShrink: 0 }} />
+                <span style={{ flex: 1, minWidth: 0, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{d.filename}</span>
+              </button>
             ))}
           </div>
         </div>

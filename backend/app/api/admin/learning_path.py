@@ -13,7 +13,7 @@ from ...models.module_chunk import ModuleChunk
 from ...models.document_chunk import DocumentChunk
 from ...models.question import Question
 from ...models.project_assignment import ProjectAssignment
-from ...services.ai import generate_learning_path, path_designer_chat, generate_questions_for_path
+from ...services.ai import generate_learning_path, path_designer_chat, generate_questions_for_path, compose_module_content
 
 router = APIRouter(tags=["admin-learning-path"])
 
@@ -49,8 +49,13 @@ async def _run_generate(project_id: str, learner_id: str, openai_client, chat_mo
             project = session.get(Project, project_id)
             quiz_length = project.quiz_length if project else 10
 
-            # Remove any previous questions for this path (handles re-generation)
-            old_qs = session.exec(select(Question).where(Question.learning_path_id == path.id)).all()
+            # Remove only unpublished questions for this path (preserve reviewed ones)
+            old_qs = session.exec(
+                select(Question).where(
+                    Question.learning_path_id == path.id,
+                    Question.is_published == False,  # noqa: E712
+                )
+            ).all()
             for q in old_qs:
                 session.delete(q)
             session.flush()
@@ -232,6 +237,85 @@ async def publish_learning_path(
     session.commit()
     session.refresh(path)
     return {"id": path.id, "is_published": path.is_published, "path_name": path.path_name}
+
+
+def _get_module_or_404(project_id: str, module_id: str, admin_id: str, session: Session) -> LearningModule:
+    _get_project_or_404(project_id, admin_id, session)
+    module = session.get(LearningModule, module_id)
+    path = session.get(LearningPath, module.learning_path_id) if module else None
+    if not module or not path or path.project_id != project_id:
+        raise HTTPException(status_code=404, detail="Module not found")
+    return module
+
+
+def _module_source_texts(module_id: str, session: Session) -> list[str]:
+    chunks = session.exec(
+        select(DocumentChunk)
+        .join(ModuleChunk, ModuleChunk.chunk_id == DocumentChunk.id)
+        .where(ModuleChunk.module_id == module_id)
+        .order_by(ModuleChunk.order_index)
+    ).all()
+    return [c.content for c in chunks]
+
+
+class ModuleUpdate(BaseModel):
+    title: Optional[str] = None
+    summary: Optional[str] = None
+    key_concepts: Optional[str] = None
+    content: Optional[str] = None
+
+
+@router.patch("/admin/projects/{project_id}/learning-path/modules/{module_id}")
+async def update_module(
+    project_id: str,
+    module_id: str,
+    body: ModuleUpdate,
+    admin=Depends(require_admin),
+    session: Session = Depends(get_session),
+):
+    """Inline-edit a module's own fields (title / summary / key concepts / content)."""
+    module = _get_module_or_404(project_id, module_id, admin.id, session)
+
+    data = body.model_dump(exclude_unset=True)
+    for field in ("title", "summary", "key_concepts", "content"):
+        if field in data and data[field] is not None:
+            setattr(module, field, data[field])
+    session.add(module)
+    session.commit()
+    session.refresh(module)
+    return module.model_dump()
+
+
+@router.post("/admin/projects/{project_id}/learning-path/modules/{module_id}/draft-content")
+async def draft_module_content(
+    project_id: str,
+    module_id: str,
+    request: Request,
+    admin=Depends(require_admin),
+    session: Session = Depends(get_session),
+):
+    """(Re)compose this module's learner-facing Markdown from its source chunks
+    using AI. Used to backfill existing modules and to redraft on demand. The raw
+    source chunks are never modified."""
+    module = _get_module_or_404(project_id, module_id, admin.id, session)
+    source_texts = _module_source_texts(module_id, session)
+    if not source_texts:
+        raise HTTPException(status_code=400, detail="This module has no source sections to draft from")
+
+    content = await compose_module_content(
+        title=module.title,
+        summary=module.summary,
+        key_concepts=module.key_concepts,
+        source_texts=source_texts,
+        openai_client=request.app.state.openai_client,
+        chat_model=settings.azure_openai_chat_deployment,
+    )
+    if content:
+        module.content = content
+        session.add(module)
+        session.commit()
+        session.refresh(module)
+    return {"id": module.id, "content": module.content}
 
 
 class PathChatRequest(BaseModel):

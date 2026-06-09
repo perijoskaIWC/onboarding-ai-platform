@@ -175,7 +175,12 @@ export default function AdminPathChat() {
     }
   }
 
-  const handleGenerate = () => {
+  const handleGenerate = async () => {
+    // Save quiz config first so the backend uses the current values
+    const payload = { quiz_length: Number(quizPool) || 10 }
+    payload.quiz_attempt_size = quizAttempt !== '' ? Number(quizAttempt) : null
+    await updateProject(projectId, payload).catch(() => {})
+
     const docIds = [...selectedDocIds]
     const t = docIds.length > 0
       ? `Generate a structured learning path using only the selected ${docIds.length} document(s).`

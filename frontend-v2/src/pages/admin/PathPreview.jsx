@@ -1,27 +1,252 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
+import { marked } from 'marked'
 import Topbar from '../../components/shell/Topbar'
 import { Badge } from '../../components/ui'
 import Icon from '../../icons'
 import { getProject } from '../../services/projects'
-import { getAdminLearningPath, publishLearningPath } from '../../services/learningPath'
+import {
+  getAdminLearningPath,
+  publishLearningPath,
+  updateModule,
+  draftModuleContent,
+} from '../../services/learningPath'
 
-function ModuleCard({ m, index, week }) {
+marked.setOptions({ breaks: true, gfm: true })
+
+// Click-to-edit text field. Auto-saves on blur (Enter for single-line,
+// Cmd/Ctrl+Enter for multiline). `renderDisplay` customizes the read view.
+function EditableText({
+  value, onSave, multiline = false, placeholder = 'Empty',
+  textStyle, inputStyle, renderDisplay, stopProp = false,
+}) {
+  const [editing, setEditing] = useState(false)
+  const [draft, setDraft] = useState(value ?? '')
+  const [status, setStatus] = useState('idle') // idle | saving | saved | error
+  const ref = useRef(null)
+
+  useEffect(() => { if (!editing) setDraft(value ?? '') }, [value, editing])
+  useEffect(() => {
+    if (editing && ref.current) {
+      const el = ref.current
+      el.focus()
+      el.setSelectionRange(el.value.length, el.value.length)
+      if (multiline) { el.style.height = 'auto'; el.style.height = el.scrollHeight + 'px' }
+    }
+  }, [editing, multiline])
+
+  const commit = async () => {
+    setEditing(false)
+    if ((draft ?? '') === (value ?? '')) return
+    setStatus('saving')
+    try {
+      await onSave(draft)
+      setStatus('saved'); setTimeout(() => setStatus('idle'), 1400)
+    } catch {
+      setStatus('error'); setDraft(value ?? ''); setTimeout(() => setStatus('idle'), 2800)
+    }
+  }
+
+  const onKeyDown = (e) => {
+    if (e.key === 'Escape') { setDraft(value ?? ''); setEditing(false) }
+    else if (e.key === 'Enter' && (!multiline || e.metaKey || e.ctrlKey)) {
+      e.preventDefault(); e.currentTarget.blur()
+    }
+  }
+
+  const StatusTag = () => {
+    if (status === 'saving') return <span style={statusStyle('var(--text-3)')}>saving…</span>
+    if (status === 'saved') return <span style={statusStyle('#16a34a')}>✓ saved</span>
+    if (status === 'error') return <span style={statusStyle('#dc2626')}>save failed — retry</span>
+    return null
+  }
+
+  if (editing) {
+    const common = {
+      ref, value: draft,
+      onChange: (e) => {
+        setDraft(e.target.value)
+        if (multiline) { e.target.style.height = 'auto'; e.target.style.height = e.target.scrollHeight + 'px' }
+      },
+      onBlur: commit, onKeyDown,
+      onClick: stopProp ? (e => e.stopPropagation()) : undefined,
+      style: {
+        width: '100%', font: 'inherit', color: 'inherit', lineHeight: 'inherit',
+        background: 'var(--surface)', border: '1px solid var(--accent)',
+        borderRadius: 6, padding: multiline ? '8px 10px' : '3px 7px',
+        outline: 'none', resize: 'none', boxSizing: 'border-box', ...inputStyle,
+      },
+    }
+    return multiline ? <textarea {...common} rows={3} /> : <input {...common} />
+  }
+
+  const hasValue = (value ?? '').toString().trim().length > 0
+  const display = renderDisplay ? renderDisplay(value) : (hasValue ? value : null)
+
+  return (
+    <span
+      className="editable-hover" title="Click to edit"
+      onClick={(e) => { if (stopProp) e.stopPropagation(); setEditing(true) }}
+      style={{ cursor: 'text', borderRadius: 5, ...textStyle }}
+    >
+      {display ?? <span style={{ color: 'var(--text-3)', fontStyle: 'italic' }}>{placeholder}</span>}
+      <StatusTag />
+    </span>
+  )
+}
+
+const statusStyle = (color) => ({
+  marginLeft: 8, fontSize: 11, fontWeight: 600, color, fontStyle: 'normal',
+  whiteSpace: 'nowrap', verticalAlign: 'middle',
+})
+
+const conceptChip = {
+  padding: '2px 9px', borderRadius: 99, fontSize: 11.5,
+  background: 'var(--surface-2)', color: 'var(--text-2)', border: '1px solid var(--border)',
+}
+
+// The curated Markdown body: rendered preview <-> raw Markdown editor, plus AI draft.
+function ContentEditor({ value, sourceCount, onSave, onDraft }) {
+  const [editing, setEditing] = useState(false)
+  const [draft, setDraft] = useState(value ?? '')
+  const [status, setStatus] = useState('idle')
+  const [drafting, setDrafting] = useState(false)
+  const ref = useRef(null)
+  const hasContent = (value ?? '').trim().length > 0
+
+  useEffect(() => { if (!editing) setDraft(value ?? '') }, [value, editing])
+  useEffect(() => {
+    if (editing && ref.current) {
+      const el = ref.current
+      el.focus(); el.style.height = 'auto'; el.style.height = Math.min(el.scrollHeight, 600) + 'px'
+    }
+  }, [editing])
+
+  const commit = async () => {
+    setEditing(false)
+    if ((draft ?? '') === (value ?? '')) return
+    setStatus('saving')
+    try { await onSave(draft); setStatus('saved'); setTimeout(() => setStatus('idle'), 1400) }
+    catch { setStatus('error'); setDraft(value ?? ''); setTimeout(() => setStatus('idle'), 2800) }
+  }
+
+  const handleDraft = async () => {
+    setDrafting(true)
+    try { await onDraft() } finally { setDrafting(false) }
+  }
+
+  const Toolbar = () => (
+    <div className="row" style={{ gap: 8, marginBottom: 10, alignItems: 'center' }}>
+      <span style={{ fontSize: 11, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.06em', fontWeight: 600 }}>
+        Module content
+      </span>
+      {status === 'saving' && <span style={statusStyle('var(--text-3)')}>saving…</span>}
+      {status === 'saved' && <span style={statusStyle('#16a34a')}>✓ saved</span>}
+      {status === 'error' && <span style={statusStyle('#dc2626')}>save failed — retry</span>}
+      <span style={{ flex: 1 }} />
+      {!editing && hasContent && (
+        <button className="btn ghost sm" onClick={() => setEditing(true)}>
+          <Icon name="edit" size={13} /> Edit
+        </button>
+      )}
+      {editing && (
+        <button className="btn primary sm" onMouseDown={(e) => { e.preventDefault(); ref.current?.blur() }}>
+          Done
+        </button>
+      )}
+      {sourceCount > 0 && (
+        <button className="btn ai sm" onClick={handleDraft} disabled={drafting} title="Rewrite from the source sections with AI">
+          <Icon name="sparkle" size={13} /> {drafting ? 'Drafting…' : hasContent ? 'Redraft with AI' : 'Draft with AI'}
+        </button>
+      )}
+    </div>
+  )
+
+  return (
+    <div style={{ marginTop: 16, borderTop: '1px solid var(--border)', paddingTop: 14 }}>
+      <Toolbar />
+      {editing ? (
+        <textarea
+          ref={ref}
+          value={draft}
+          onChange={(e) => { setDraft(e.target.value); e.target.style.height = 'auto'; e.target.style.height = Math.min(e.target.scrollHeight, 600) + 'px' }}
+          onBlur={commit}
+          onKeyDown={(e) => { if (e.key === 'Escape') { setDraft(value ?? ''); setEditing(false) } }}
+          placeholder="Write the module content in Markdown…"
+          style={{
+            width: '100%', minHeight: 160, fontFamily: 'var(--font-mono)', fontSize: 12.5,
+            lineHeight: 1.6, color: 'var(--text-1)', background: 'var(--bg)',
+            border: '1px solid var(--accent)', borderRadius: 8, padding: '12px 14px',
+            outline: 'none', resize: 'vertical', boxSizing: 'border-box',
+          }}
+        />
+      ) : hasContent ? (
+        <div
+          className="md-body editable-hover"
+          title="Click to edit"
+          onClick={() => setEditing(true)}
+          style={{ cursor: 'text', borderRadius: 8, padding: '4px 6px' }}
+          dangerouslySetInnerHTML={{ __html: marked.parse(value) }}
+        />
+      ) : (
+        <div className="ai-surface" style={{ padding: 16, display: 'flex', gap: 12, alignItems: 'center' }}>
+          <Icon name="sparkle" size={18} style={{ color: 'var(--ai)', flexShrink: 0 }} />
+          <div style={{ flex: 1 }}>
+            <strong style={{ fontSize: 13 }}>No curated content yet</strong>
+            <div style={{ fontSize: 12.5, color: 'var(--text-2)', marginTop: 2 }}>
+              {sourceCount > 0
+                ? 'Draft a clean lesson from this module’s source sections, then edit it.'
+                : 'Write content below, or attach source sections first.'}
+            </div>
+          </div>
+          {sourceCount > 0
+            ? <button className="btn ai sm" onClick={handleDraft} disabled={drafting}><Icon name="sparkle" size={13} /> {drafting ? 'Drafting…' : 'Draft with AI'}</button>
+            : <button className="btn sm" onClick={() => setEditing(true)}>Write manually</button>}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function SourceSections({ chunks }) {
+  const [open, setOpen] = useState(false)
+  if (!chunks.length) return null
+  return (
+    <div style={{ marginTop: 14, borderTop: '1px solid var(--border)', paddingTop: 12 }}>
+      <button className="btn ghost sm" onClick={() => setOpen(o => !o)} style={{ paddingLeft: 0 }}>
+        <Icon name={open ? 'chevronLeft' : 'chevronRight'} size={13} style={{ transform: open ? 'rotate(90deg)' : 'rotate(-90deg)' }} />
+        Source sections ({chunks.length}) — read-only
+      </button>
+      {open && (
+        <div className="col" style={{ gap: 8, marginTop: 10 }}>
+          <div style={{ fontSize: 11, color: 'var(--text-3)' }}>
+            Original document excerpts. Kept intact for AI search, quizzes &amp; citations — edit the content above instead.
+          </div>
+          {chunks.map((c, ci) => (
+            <div key={c.id ?? ci} style={{
+              padding: '10px 12px', background: 'var(--bg)', border: '1px solid var(--border)',
+              borderRadius: 8, fontSize: 12.5, lineHeight: 1.6, color: 'var(--text-2)',
+              whiteSpace: 'pre-wrap', wordBreak: 'break-word', maxHeight: 200, overflow: 'auto',
+            }}>
+              <span className="mono" style={{ fontSize: 10, color: 'var(--text-3)' }}>Section {ci + 1}</span>
+              <div style={{ marginTop: 4 }}>{(c.content ?? '').trim()}</div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function ModuleCard({ m, week, onSaveModule, onDraft }) {
   const [expanded, setExpanded] = useState(false)
-  const concepts = m.key_concepts
-    ? m.key_concepts.split(',').map(s => s.trim()).filter(Boolean)
-    : []
   const chunks = m.chunks ?? []
 
   return (
     <div className="card" style={{ overflow: 'hidden' }}>
       {/* Header row — always visible */}
-      <div
-        style={{ padding: '18px 20px', cursor: 'pointer', userSelect: 'none' }}
-        onClick={() => setExpanded(e => !e)}
-      >
+      <div style={{ padding: '18px 20px', cursor: 'pointer' }} onClick={() => setExpanded(e => !e)}>
         <div className="row" style={{ alignItems: 'flex-start', gap: 16 }}>
-          {/* Week badge */}
           <div style={{ flexShrink: 0 }}>
             <div style={{
               width: 52, height: 52, borderRadius: 12,
@@ -35,72 +260,55 @@ function ModuleCard({ m, index, week }) {
             </div>
           </div>
 
-          {/* Title + meta */}
           <div style={{ flex: 1, minWidth: 0 }}>
             <div className="row" style={{ gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
-              <h3 style={{ margin: 0, fontSize: 15, letterSpacing: '-0.01em' }}>{m.title}</h3>
+              <h3 style={{ margin: 0, fontSize: 15, letterSpacing: '-0.01em', flex: 1, minWidth: 0 }}>
+                <EditableText value={m.title} onSave={v => onSaveModule(m.id, { title: v })} placeholder="Untitled module" stopProp />
+              </h3>
               {chunks.length > 0 && (
-                <Badge tone="outline"><Icon name="docs" size={11} /> {chunks.length} sections</Badge>
+                <Badge tone="outline"><Icon name="docs" size={11} /> {chunks.length} sources</Badge>
               )}
+              {(m.content ?? '').trim() && <Badge tone="success" dot>Content ready</Badge>}
             </div>
-            {m.summary && (
-              <div className="muted" style={{ marginTop: 5, fontSize: 13, lineHeight: 1.5, maxWidth: 680 }}>
-                {m.summary}
-              </div>
-            )}
-            {concepts.length > 0 && (
-              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5, marginTop: 10 }}>
-                {concepts.map(c => (
-                  <span key={c} style={{
-                    padding: '2px 9px', borderRadius: 99, fontSize: 11.5,
-                    background: 'var(--surface-2)', color: 'var(--text-2)',
-                    border: '1px solid var(--border)',
-                  }}>{c}</span>
-                ))}
-              </div>
-            )}
+
+            <div className="muted" style={{ marginTop: 5, fontSize: 13, lineHeight: 1.5, maxWidth: 680 }}>
+              <EditableText value={m.summary} onSave={v => onSaveModule(m.id, { summary: v })} placeholder="Add a summary" multiline stopProp />
+            </div>
+
+            <div style={{ marginTop: 10 }}>
+              <EditableText
+                value={m.key_concepts}
+                onSave={v => onSaveModule(m.id, { key_concepts: v })}
+                placeholder="Add key concepts (comma-separated)" stopProp
+                renderDisplay={(val) => {
+                  const cs = (val || '').split(',').map(s => s.trim()).filter(Boolean)
+                  if (!cs.length) return null
+                  return (
+                    <span style={{ display: 'inline-flex', flexWrap: 'wrap', gap: 5 }}>
+                      {cs.map(c => <span key={c} style={conceptChip}>{c}</span>)}
+                    </span>
+                  )
+                }}
+              />
+            </div>
           </div>
 
-          {/* Expand toggle */}
           <div style={{ flexShrink: 0, color: 'var(--text-3)', marginTop: 2 }}>
             <Icon name={expanded ? 'chevronLeft' : 'chevronRight'} size={14} style={{ transform: expanded ? 'rotate(90deg)' : 'rotate(-90deg)', transition: 'transform 0.2s' }} />
           </div>
         </div>
       </div>
 
-      {/* Expanded content */}
-      {expanded && chunks.length > 0 && (
-        <div style={{ borderTop: '1px solid var(--border)', background: 'var(--bg)' }}>
-          {chunks.map((c, ci) => (
-            <div key={c.id ?? ci} style={{
-              padding: '16px 20px 16px 88px',
-              borderBottom: ci < chunks.length - 1 ? '1px solid var(--border)' : 'none',
-            }}>
-              <div className="row" style={{ gap: 10, alignItems: 'flex-start' }}>
-                <span style={{
-                  flexShrink: 0, width: 22, height: 22, borderRadius: 99,
-                  background: 'var(--surface)', border: '1px solid var(--border)',
-                  display: 'grid', placeItems: 'center',
-                  fontSize: 10, color: 'var(--text-3)', fontFamily: 'var(--font-mono)',
-                }}>{ci + 1}</span>
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{
-                    fontSize: 13, lineHeight: 1.65, color: 'var(--text-1)',
-                    whiteSpace: 'pre-wrap', wordBreak: 'break-word',
-                    maxHeight: 260, overflow: 'auto',
-                  }}>
-                    {(c.content ?? '').trim()}
-                  </div>
-                </div>
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
-
-      {expanded && chunks.length === 0 && (
-        <div style={{ borderTop: '1px solid var(--border)', padding: '16px 20px', color: 'var(--text-3)', fontSize: 13 }}>
-          No content sections attached to this module.
+      {/* Expanded: curated content editor + read-only sources */}
+      {expanded && (
+        <div style={{ borderTop: '1px solid var(--border)', background: 'var(--bg)', padding: '0 20px 18px 88px' }}>
+          <ContentEditor
+            value={m.content}
+            sourceCount={chunks.length}
+            onSave={(v) => onSaveModule(m.id, { content: v })}
+            onDraft={() => onDraft(m.id)}
+          />
+          <SourceSections chunks={chunks} />
         </div>
       )}
     </div>
@@ -125,15 +333,24 @@ export default function AdminPathPreview() {
       .finally(() => setLoading(false))
   }, [projectId])
 
+  const patchModuleLocal = (moduleId, fields) =>
+    setPath(p => ({ ...p, modules: p.modules.map(m => m.id === moduleId ? { ...m, ...fields } : m) }))
+
+  const handleSaveModule = async (moduleId, fields) => {
+    const updated = await updateModule(projectId, moduleId, fields)
+    patchModuleLocal(moduleId, { title: updated.title, summary: updated.summary, key_concepts: updated.key_concepts, content: updated.content })
+  }
+
+  const handleDraft = async (moduleId) => {
+    const res = await draftModuleContent(projectId, moduleId)
+    patchModuleLocal(moduleId, { content: res.content })
+  }
+
   const handlePublish = async () => {
     if (!path) return
     setPublishing(true)
-    try {
-      await publishLearningPath(projectId, path.id)
-      setPublished(true)
-    } finally {
-      setPublishing(false)
-    }
+    try { await publishLearningPath(projectId, path.id); setPublished(true) }
+    finally { setPublishing(false) }
   }
 
   if (loading) {
@@ -152,6 +369,19 @@ export default function AdminPathPreview() {
 
   return (
     <>
+      <style>{`
+        .editable-hover:hover { background: var(--surface-2); box-shadow: 0 0 0 4px var(--surface-2); }
+        .md-body h2 { font-size: 16px; font-weight: 600; margin: 18px 0 8px; letter-spacing: -0.01em; }
+        .md-body h3 { font-size: 14px; font-weight: 600; margin: 14px 0 6px; }
+        .md-body p { font-size: 13.5px; line-height: 1.7; color: var(--text-1); margin: 8px 0; }
+        .md-body ul, .md-body ol { font-size: 13.5px; line-height: 1.7; color: var(--text-1); padding-left: 20px; margin: 8px 0; }
+        .md-body li { margin: 3px 0; }
+        .md-body table { border-collapse: collapse; font-size: 12.5px; margin: 10px 0; width: 100%; }
+        .md-body th, .md-body td { border: 1px solid var(--border); padding: 6px 10px; text-align: left; }
+        .md-body th { background: var(--surface-2); font-weight: 600; }
+        .md-body code { font-family: var(--font-mono); font-size: 12px; background: var(--surface-2); padding: 1px 5px; border-radius: 4px; }
+        .md-body strong { font-weight: 600; }
+      `}</style>
       <Topbar crumbs={['Projects', project?.name ?? '…', 'Path preview']} search={false} actions={
         <>
           <button className="btn" onClick={() => navigate(`/v2/admin/projects/${projectId}/paths`)}>
@@ -176,7 +406,7 @@ export default function AdminPathPreview() {
               <Badge tone={published ? 'success' : 'warning'} dot>{published ? 'Published' : 'Draft'}</Badge>
               <Badge tone="ai" dot>AI generated</Badge>
             </div>
-            <div className="sub">{modules.length} modules · {totalSections} sections · Generated by Atlas · Click any module to expand content</div>
+            <div className="sub">{modules.length} modules · {totalSections} sources · Generated by Atlas · Expand a module to edit its content</div>
           </div>
         </div>
 
@@ -193,7 +423,9 @@ export default function AdminPathPreview() {
               </div>
             ) : modules.map((m, i) => {
               const week = allSameWeek ? i + 1 : (m.week_number ?? i + 1)
-              return <ModuleCard key={m.id ?? i} m={m} index={i} week={week} />
+              return (
+                <ModuleCard key={m.id ?? i} m={m} week={week} onSaveModule={handleSaveModule} onDraft={handleDraft} />
+              )
             })}
 
             {modules.length > 0 && (

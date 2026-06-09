@@ -1,9 +1,12 @@
 import { useState, useEffect } from 'react'
 import { useParams, useNavigate, useLocation } from 'react-router-dom'
+import { marked } from 'marked'
 import Topbar from '../../components/shell/Topbar'
 import { Badge } from '../../components/ui'
 import Icon from '../../icons'
 import { getLearnerPath, getLearnerLearningPath, completePathModule, completeModule } from '../../services/learningPath'
+
+marked.setOptions({ breaks: true, gfm: true })
 
 export default function LearnerChapter() {
   const { pathId, chapterId } = useParams()
@@ -81,10 +84,25 @@ export default function LearnerChapter() {
   }
 
   const chunks = module.chunks ?? []
-  const readMinutes = Math.max(5, Math.round(chunks.reduce((acc, c) => acc + (c.content?.length ?? 0), 0) / 1000))
+  const content = (module.content ?? '').trim()
+  const readLength = content ? content.length : chunks.reduce((acc, c) => acc + (c.content?.length ?? 0), 0)
+  const readMinutes = Math.max(5, Math.round(readLength / 1000))
 
   return (
     <>
+      <style>{`
+        .chapter-md h1, .chapter-md h2 { font-size: 20px; font-weight: 600; letter-spacing: -0.015em; margin: 28px 0 12px; }
+        .chapter-md h3 { font-size: 16px; font-weight: 600; margin: 22px 0 8px; }
+        .chapter-md p { font-size: 14.5px; line-height: 1.75; color: var(--text-2); margin: 12px 0; }
+        .chapter-md ul, .chapter-md ol { font-size: 14.5px; line-height: 1.75; color: var(--text-2); padding-left: 22px; margin: 12px 0; }
+        .chapter-md li { margin: 5px 0; }
+        .chapter-md table { border-collapse: collapse; width: 100%; font-size: 13.5px; margin: 16px 0; }
+        .chapter-md th, .chapter-md td { border: 1px solid var(--border); padding: 8px 12px; text-align: left; }
+        .chapter-md th { background: var(--surface-2); font-weight: 600; }
+        .chapter-md code { font-family: var(--font-mono); font-size: 13px; background: var(--surface-2); padding: 2px 6px; border-radius: 5px; }
+        .chapter-md strong { font-weight: 600; color: var(--text-1); }
+        .chapter-md blockquote { border-left: 3px solid var(--border); margin: 12px 0; padding: 4px 16px; color: var(--text-3); }
+      `}</style>
       {!focus && (
         <Topbar crumbs={['Learning paths', module.title]} actions={
           <>
@@ -147,7 +165,12 @@ export default function LearnerChapter() {
               </>
             )}
 
-            {chunks.length > 0 && (
+            {content ? (
+              <>
+                <h2 style={{ marginTop: 36, fontSize: 20, fontWeight: 600, letterSpacing: '-0.015em' }}>Reading material</h2>
+                <div className="chapter-md" style={{ marginTop: 16 }} dangerouslySetInnerHTML={{ __html: marked.parse(content) }} />
+              </>
+            ) : chunks.length > 0 && (
               <>
                 <h2 style={{ marginTop: 36, fontSize: 20, fontWeight: 600, letterSpacing: '-0.015em' }}>Reading material</h2>
                 {chunks.map((chunk, i) => (
@@ -161,7 +184,7 @@ export default function LearnerChapter() {
               </>
             )}
 
-            {chunks.length === 0 && !module.summary && (
+            {chunks.length === 0 && !content && !module.summary && (
               <div className="ai-surface" style={{ padding: 16, marginTop: 28, display: 'flex', gap: 12 }}>
                 <Icon name="bulb" size={18} style={{ color: 'var(--ai)', flexShrink: 0, marginTop: 1 }} />
                 <div>

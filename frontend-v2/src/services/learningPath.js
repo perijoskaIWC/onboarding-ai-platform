@@ -24,6 +24,10 @@ export const pathDesignerChat = (projectId, message, history = [], documentIds =
 }
 export const listAdminPathNames = (projectId) =>
   api.get(`/admin/projects/${projectId}/learning-path/names`).then(r => r.data)
+export const updateModule = (projectId, moduleId, fields) =>
+  api.patch(`/admin/projects/${projectId}/learning-path/modules/${moduleId}`, fields).then(r => r.data)
+export const draftModuleContent = (projectId, moduleId) =>
+  api.post(`/admin/projects/${projectId}/learning-path/modules/${moduleId}/draft-content`).then(r => r.data)
 
 // Learner
 export const getLearnerLearningPath = (projectId, pathId = null) => {

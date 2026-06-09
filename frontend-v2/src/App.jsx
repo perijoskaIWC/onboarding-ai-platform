@@ -25,6 +25,7 @@ import LearnerChapter from './pages/learner/Chapter'
 import LearnerQuiz from './pages/learner/Quiz'
 import LearnerQuizResult from './pages/learner/QuizResult'
 import LearnerAITutor from './pages/learner/AITutor'
+import LearnerDocuments from './pages/learner/Documents'
 import LearnerReadiness from './pages/learner/Readiness'
 import LearnerProgress from './pages/learner/Progress'
 import LearnerProfile from './pages/learner/Profile'
@@ -74,6 +75,7 @@ export default function App() {
         <Route path="/v2/learner/paths/:pathId/quiz" element={<LearnerLayout><LearnerQuiz /></LearnerLayout>} />
         <Route path="/v2/learner/paths/:pathId/quiz/result" element={<LearnerLayout><LearnerQuizResult /></LearnerLayout>} />
         <Route path="/v2/learner/ai-tutor" element={<LearnerLayout><LearnerAITutor /></LearnerLayout>} />
+        <Route path="/v2/learner/documents" element={<LearnerLayout><LearnerDocuments /></LearnerLayout>} />
         <Route path="/v2/learner/readiness" element={<LearnerLayout><LearnerReadiness /></LearnerLayout>} />
         <Route path="/v2/learner/progress" element={<LearnerLayout><LearnerProgress /></LearnerLayout>} />
         <Route path="/v2/learner/profile" element={<LearnerLayout><LearnerProfile /></LearnerLayout>} />

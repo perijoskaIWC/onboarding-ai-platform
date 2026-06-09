@@ -25,6 +25,7 @@ const NAV_LEARNER = [
     { id: 'learner-dashboard', label: 'Home', icon: 'grid', path: '/v2/learner' },
     { id: 'learner-paths', label: 'My Learning Paths', icon: 'book', path: '/v2/learner/paths' },
     { id: 'learner-ai-tutor', label: 'AI Tutor', icon: 'sparkle', path: '/v2/learner/ai-tutor' },
+    { id: 'learner-documents', label: 'Documents', icon: 'doc', path: '/v2/learner/documents' },
   ]},
   { group: 'Track', items: [
     { id: 'learner-progress', label: 'Progress', icon: 'trend', path: '/v2/learner/progress' },

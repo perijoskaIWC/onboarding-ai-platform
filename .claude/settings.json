@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\" http://localhost:8000/health)",
+      "Bash(curl -s http://localhost:8000/)",
+      "Bash(curl -s -X POST http://localhost:8000/api/auth/login -H \"Content-Type: application/json\" -d '{\"email\":\"admin@example.com\",\"password\":\"admin\"}')",
+      "Bash(wsl bash *)",
+      "Bash(curl -s -X POST http://localhost:8000/api/auth/login -H \"Content-Type: application/json\" -d '{\"email\":\"admin@example.com\",\"password\":\"adminpass123\"}')",
+      "PowerShell(netstat -ano | Select-String \":5174 \" | Where-Object { $_ -match \"LISTEN\" })",
+      "PowerShell(netstat -ano | Select-String \":8000 \" | Where-Object { $_ -match \"LISTEN\" })",
+      "PowerShell(Get-Process -Name node -ErrorAction SilentlyContinue)",
+      "Bash(curl -s -X POST http://localhost:5174/api/auth/login -H \"Content-Type: application/json\" -d '{\"email\":\"admin@example.com\",\"password\":\"adminpass123\"}')"
+    ]
+  }
+}

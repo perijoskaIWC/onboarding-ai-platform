@@ -1,0 +1,24 @@
+# Copy to dev.tfvars (gitignored). DO NOT COMMIT the populated file.
+
+subscription_id = "f340c55c-ac6a-485c-949d-cce0e1dd123a"
+location        = "westeurope"
+project         = "onboarding-atlas"
+environment     = "dev"
+
+# Existing Azure OpenAI
+aoai_endpoint             = "https://chat-app-elena-resource.openai.azure.com"
+aoai_api_version          = "2024-08-01-preview"
+aoai_chat_deployment      = "gpt-4o"
+aoai_embedding_deployment = "text-embedding-3-large"
+
+# Provide the AOAI key via env var instead (preferred):
+#   $env:TF_VAR_aoai_api_key = "<your key>"
+# Or set here (NEVER commit this file):
+# aoai_api_key = "..."
+
+# Postgres region (westeurope is restricted on some MPN subscriptions)
+postgres_location = "northeurope"
+
+# Backend cost knobs
+backend_min_replicas = 0
+backend_max_replicas = 3

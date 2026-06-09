@@ -31,7 +31,12 @@ async def _run_generate(project_id: str, quiz_length: int, openai_client, chat_m
     try:
         with Session(engine) as session:
             items = await generate_questions(project_id, quiz_length, session, openai_client, chat_model, embedding_model)
-            old = session.exec(select(Question).where(Question.project_id == project_id)).all()
+            old = session.exec(
+                select(Question).where(
+                    Question.project_id == project_id,
+                    Question.is_published == False,  # noqa: E712
+                )
+            ).all()
             for q in old:
                 session.delete(q)
             for item in items:

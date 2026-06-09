@@ -12,13 +12,49 @@ from ...models.quiz_attempt import QuizAttempt
 from ...models.learning_path import LearningPath
 from ...models.learning_module import LearningModule
 from ...models.module_completion import ModuleCompletion
-from ...services.ai import rag_chat, orchestrate
+from ...services.ai import rag_chat, orchestrate, rag_chat_global
 
 router = APIRouter(tags=["user-chat"])
 
 
 class ChatRequest(BaseModel):
     question: str
+
+
+def _assigned_project_ids(learner_id: str, session: Session) -> list[str]:
+    rows = session.exec(
+        select(ProjectAssignment.project_id).where(ProjectAssignment.learner_id == learner_id)
+    ).all()
+    # De-dup while preserving order.
+    seen, out = set(), []
+    for pid in rows:
+        if pid not in seen:
+            seen.add(pid)
+            out.append(pid)
+    return out
+
+
+@router.post("/user/chat")
+async def global_chat(
+    body: ChatRequest,
+    request: Request,
+    learner=Depends(require_learner),
+    session: Session = Depends(get_session),
+):
+    """Global tutor: answers across ALL of the learner's assigned projects/documents."""
+    if not body.question.strip():
+        raise HTTPException(status_code=422, detail="Question cannot be empty")
+
+    project_ids = _assigned_project_ids(learner.id, session)
+    result = await rag_chat_global(
+        question=body.question,
+        project_ids=project_ids,
+        session=session,
+        openai_client=request.app.state.openai_client,
+        embedding_model=settings.azure_openai_embedding_deployment,
+        chat_model=settings.azure_openai_chat_deployment,
+    )
+    return result
 
 
 def _check_assigned(project_id: str, learner_id: str, session: Session):

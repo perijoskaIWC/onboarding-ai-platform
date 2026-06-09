@@ -1,4 +1,6 @@
+import asyncio
 import json
+import random
 from fastapi import Request
 from openai import AsyncOpenAI
 from sqlmodel import Session, select
@@ -6,6 +8,19 @@ from sqlmodel import Session, select
 from ..models.document_chunk import DocumentChunk
 from ..models.learning_path import LearningPath
 from ..models.learning_module import LearningModule
+
+
+def _parse_questions(raw: str) -> list[dict]:
+    data = json.loads(raw)
+    if isinstance(data, dict):
+        # Find the first list value, not just the first value
+        for v in data.values():
+            if isinstance(v, list):
+                return v
+        raise ValueError(f"No question list found in response keys: {list(data.keys())}")
+    if isinstance(data, list):
+        return data
+    raise ValueError("Unexpected response shape from model")
 
 
 SEED_QUERIES = [
@@ -42,6 +57,48 @@ async def _retrieve_chunks(
         q.order_by(text("embedding <=> CAST(:vec AS vector)").bindparams(vec=str(vec)))
         .limit(top_k)
     ).all()
+
+
+async def compose_module_content(
+    title: str,
+    summary: str,
+    key_concepts: str,
+    source_texts: list[str],
+    openai_client: AsyncOpenAI,
+    chat_model: str,
+) -> str:
+    """Rewrite a module's raw source excerpts into clean, learner-facing Markdown.
+    Used at generation time and by the on-demand 'draft content' endpoint."""
+    if not source_texts:
+        return ""
+    corpus = "\n\n---\n\n".join(t.strip() for t in source_texts if t and t.strip())
+    if not corpus:
+        return ""
+
+    system_prompt = (
+        "You are an onboarding curriculum writer. Rewrite the raw source excerpts "
+        "into a clean, well-structured Markdown lesson for ONE module. "
+        "Use ## and ### headings, short paragraphs, bullet lists, and Markdown tables "
+        "where the source implies tabular data. Preserve every concrete fact, name, "
+        "number, and tool from the sources — do NOT invent information that isn't there. "
+        "Do not include a top-level # title (the module title is shown separately). "
+        "Write in clear, professional prose suitable for a new hire."
+    )
+    user_prompt = (
+        f"Module title: {title}\n"
+        f"Summary: {summary}\n"
+        f"Key concepts: {key_concepts}\n\n"
+        f"Raw source excerpts:\n\n{corpus}"
+    )
+    resp = await openai_client.chat.completions.create(
+        model=chat_model,
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+        temperature=0.3,
+    )
+    return (resp.choices[0].message.content or "").strip()
 
 
 async def generate_learning_path(
@@ -144,6 +201,7 @@ async def generate_learning_path(
     session.add(path)
     session.flush()
 
+    created: list[tuple[LearningModule, list[str]]] = []
     for i, mod in enumerate(data.get("modules", [])):
         lm = LearningModule(
             learning_path_id=path.id,
@@ -156,6 +214,7 @@ async def generate_learning_path(
         session.add(lm)
         session.flush()
 
+        source_texts: list[str] = []
         for order, ci in enumerate(mod.get("chunk_indices", [])):
             if isinstance(ci, int) and 0 <= ci < len(sample):
                 session.add(ModuleChunk(
@@ -163,6 +222,19 @@ async def generate_learning_path(
                     chunk_id=sample[ci].id,
                     order_index=order,
                 ))
+                source_texts.append(sample[ci].content)
+        created.append((lm, source_texts))
+
+    # Compose clean Markdown content for each module concurrently.
+    import asyncio
+    contents = await asyncio.gather(*[
+        compose_module_content(lm.title, lm.summary, lm.key_concepts, texts, openai_client, chat_model)
+        for lm, texts in created
+    ], return_exceptions=True)
+    for (lm, _), c in zip(created, contents):
+        if isinstance(c, str) and c:
+            lm.content = c
+            session.add(lm)
 
     session.commit()
     session.refresh(path)
@@ -215,6 +287,99 @@ async def rag_chat(
     }
 
 
+async def _retrieve_chunks_multi(
+    query: str,
+    project_ids: list[str],
+    top_k: int,
+    session: Session,
+    openai_client: AsyncOpenAI,
+    embedding_model: str,
+) -> list[DocumentChunk]:
+    """Vector search across several projects at once (global tutor)."""
+    from sqlalchemy import text
+    if not project_ids:
+        return []
+    emb_response = await openai_client.embeddings.create(
+        input=[query], model=embedding_model, dimensions=1536
+    )
+    vec = emb_response.data[0].embedding
+    return session.exec(
+        select(DocumentChunk)
+        .where(DocumentChunk.project_id.in_(project_ids))
+        .order_by(text("embedding <=> CAST(:vec AS vector)").bindparams(vec=str(vec)))
+        .limit(top_k)
+    ).all()
+
+
+async def rag_chat_global(
+    question: str,
+    project_ids: list[str],
+    session: Session,
+    openai_client: AsyncOpenAI,
+    embedding_model: str,
+    chat_model: str,
+    top_k: int = 8,
+) -> dict:
+    """RAG answer grounded in ALL documents across the projects the learner is
+    assigned to. Citations reference document filenames."""
+    from ..models.document import Document
+    from ..models.project import Project
+
+    if not project_ids:
+        return {"answer": "You don't have any assigned materials yet, so there's nothing for me to search. Ask your manager to assign you a learning path.", "sources": []}
+
+    chunks = await _retrieve_chunks_multi(question, project_ids, top_k, session, openai_client, embedding_model)
+    if not chunks:
+        return {"answer": "I couldn't find anything relevant in your onboarding materials for that question.", "sources": []}
+
+    # Map chunk -> document filename / project name for labelled context + citations.
+    doc_ids = {c.document_id for c in chunks}
+    docs = {d.id: d for d in session.exec(select(Document).where(Document.id.in_(doc_ids))).all()}
+    proj_ids = {c.project_id for c in chunks}
+    projects = {p.id: p for p in session.exec(select(Project).where(Project.id.in_(proj_ids))).all()}
+
+    def label(c):
+        d = docs.get(c.document_id)
+        return d.filename if d else "document"
+
+    context = "\n\n---\n\n".join(
+        f"[{i+1}] (from \"{label(c)}\")\n{c.content}" for i, c in enumerate(chunks)
+    )
+
+    system_prompt = (
+        "You are Atlas, a helpful onboarding tutor. Answer the learner's question using ONLY "
+        "the provided document excerpts, which may come from several different documents. "
+        "Cite the source filename(s) you used. Be clear and concise. "
+        "If the answer is not in the excerpts, say: 'I cannot answer this based on your current onboarding materials.'"
+    )
+
+    response = await openai_client.chat.completions.create(
+        model=chat_model,
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": f"Document excerpts:\n{context}\n\nQuestion: {question}"},
+        ],
+        temperature=0.2,
+    )
+
+    # De-duplicated source list keyed by document.
+    seen = set()
+    sources = []
+    for c in chunks:
+        if c.document_id in seen:
+            continue
+        seen.add(c.document_id)
+        d = docs.get(c.document_id)
+        sources.append({
+            "document_id": c.document_id,
+            "filename": d.filename if d else "document",
+            "project_id": c.project_id,
+            "project_name": projects[c.project_id].name if c.project_id in projects else "",
+        })
+
+    return {"answer": response.choices[0].message.content, "sources": sources}
+
+
 async def generate_questions(
     project_id: str,
     quiz_length: int,
@@ -262,15 +427,11 @@ async def generate_questions(
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": f"Learning material:\n\n{corpus}"},
         ],
-        temperature=0.4,
+        temperature=round(random.uniform(0.4, 0.7), 2),
         response_format={"type": "json_object"},
     )
 
-    raw = response.choices[0].message.content
-    data = json.loads(raw)
-    if isinstance(data, dict):
-        data = next(iter(data.values()))
-    return data[:quiz_length]
+    return _parse_questions(response.choices[0].message.content)[:quiz_length]
 
 
 async def generate_questions_for_path(
@@ -296,9 +457,13 @@ async def generate_questions_for_path(
     if not modules:
         return []
 
-    questions_per_module = max(2, quiz_length // len(modules))
-    results = []
+    # Distribute quiz_length across modules, spreading the remainder across early modules
+    base = quiz_length // len(modules)
+    remainder = quiz_length % len(modules)
+    counts = [base + (1 if i < remainder else 0) for i in range(len(modules))]
 
+    # Fetch all module chunks upfront (sync, no parallelism needed)
+    module_corpora = []
     for module in modules:
         chunks = session.exec(
             select(DC)
@@ -306,36 +471,46 @@ async def generate_questions_for_path(
             .where(ModuleChunk.module_id == module.id)
             .order_by(ModuleChunk.order_index)
         ).all()
+        module_corpora.append(chunks)
 
-        if not chunks:
-            continue
-
-        corpus = "\n\n---\n\n".join(c.content for c in chunks)
+    # Build all GPT calls and fire them in parallel
+    async def _call(module, corpus_chunks, n):
+        if not corpus_chunks or n == 0:
+            return []
+        corpus = "\n\n---\n\n".join(c.content for c in corpus_chunks)
         system_prompt = (
-            f"You are a quiz designer. Generate exactly {questions_per_module} multiple-choice questions "
+            f"You are a quiz designer. Generate exactly {n} multiple-choice questions "
             f"testing knowledge of: {module.title}. Use ONLY the provided learning material. "
+            "Do NOT repeat questions that test the same concept. "
             'Respond ONLY with a valid JSON object: '
             '{"questions": [{"question": "...", "options": ["A) ...", "B) ...", "C) ...", "D) ..."], "answer": "A", "explanation": "..."}]} '
             "No markdown fences."
         )
-
         response = await openai_client.chat.completions.create(
             model=chat_model,
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": f"Learning material:\n\n{corpus}"},
             ],
-            temperature=0.4,
+            temperature=round(random.uniform(0.4, 0.7), 2),
             response_format={"type": "json_object"},
         )
+        return _parse_questions(response.choices[0].message.content)[:n]
 
-        raw = response.choices[0].message.content
-        data = json.loads(raw)
-        if isinstance(data, dict):
-            data = next(iter(data.values()))
+    responses = await asyncio.gather(*[
+        _call(mod, chunks, n)
+        for mod, chunks, n in zip(modules, module_corpora, counts)
+    ])
 
-        for item in data[:questions_per_module]:
-            results.append((item, module.id, path_id))
+    # Deduplicate across modules by question text
+    seen_questions: set[str] = set()
+    results = []
+    for module, items in zip(modules, responses):
+        for item in items:
+            key = item.get("question", "").strip().lower()
+            if key and key not in seen_questions:
+                seen_questions.add(key)
+                results.append((item, module.id, path_id))
 
     return results
 

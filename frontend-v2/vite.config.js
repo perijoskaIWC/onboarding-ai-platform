@@ -8,6 +8,12 @@ export default defineConfig(({ mode }) => {
     server: {
       host: '0.0.0.0',
       port: 5174,
+      // Project lives on a Windows drive bind-mounted into a WSL container, so
+      // inotify file events don't fire. Poll instead, or HMR never sees edits.
+      watch: {
+        usePolling: true,
+        interval: 200,
+      },
       proxy: {
         '/api': {
           target: env.VITE_API_URL ?? 'http://backend:8000',
